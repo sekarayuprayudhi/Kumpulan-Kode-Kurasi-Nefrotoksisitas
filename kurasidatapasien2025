@@ -4,56 +4,47 @@ import matplotlib.pyplot as plt
 
 def filter_excel_by_keyword(
     excel_files_pattern,
-    filter_keyword,
+    list_sortir,
     column_name="Item Name",
     output_prefix="LT",
-    output_suffix="egfr"
+    output_suffix="egfr",
+    standardize_name=False,
+    standardized_value="egfr"
 ):
     """
-    Membaca file Excel berdasarkan pola, memfilter baris berdasarkan keyword,
-    dan menyimpan hasilnya ke file Excel baru.
-
-    Parameters
-    ----------
-    excel_files_pattern : str
-        Pola path file Excel (contoh: "/content/LT *.xlsx").
-    filter_keyword : str
-        Keyword yang dicari dalam kolom (case-insensitive).
-    column_name : str
-        Nama kolom tempat keyword dicari (default: "Item Name").
-    output_prefix : str
-        Awalan nama file output (default: "LT").
-    output_suffix : str
-        Akhiran nama file output (default: "egfr").
-
-    Returns
-    -------
-    None
+    Filter Excel berdasarkan daftar nama parameter yang berbeda
+    tapi memiliki konsep sama (exact matching, case-insensitive).
     """
 
     excel_files = glob.glob(excel_files_pattern)
-    print(f"Found {len(excel_files)} Excel files matching the pattern '{excel_files_pattern}'.")
+    print(f"Found {len(excel_files)} Excel files.")
+
+    # Normalisasi list ke lowercase untuk matching
+    list_lower = {str(x).lower() for x in list_sortir}
 
     for file_path in excel_files:
-        print(f"\nProcessing file: {file_path}")
+        print(f"\nProcessing: {file_path}")
 
         df = pd.read_excel(file_path)
 
         if column_name not in df.columns:
-            print(f" Kolom '{column_name}' Tidak ditemukan. Skip file.")
+            print(f"Kolom '{column_name}' tidak ditemukan. Skip.")
             continue
 
-        df_filtered = df[
-            df[column_name]
-            .astype(str)
-            .str.contains(filter_keyword, case=False, na=False)
-        ]
+        # ===== Exact concept match (case-insensitive) =====
+        mask = df[column_name].astype(str).str.lower().isin(list_lower)
+        df_filtered = df[mask].copy()
 
         if df_filtered.empty:
-            print(f"Tidak ditemukan data '{filter_keyword}'. Tidak ada file disimpan.")
+            print("Tidak ada parameter cocok. Skip.")
             continue
 
-        # Ambil nama bulan / identifier dari nama file
+        # ===== Standardisasi nama konsep =====
+        if standardize_name:
+            df_filtered[column_name] = standardized_value
+            print(f"Nama parameter distandardisasi → '{standardized_value}'")
+
+        # ===== Ambil identifier dari nama file =====
         match = re.search(r'LT\s(.+?)\.xlsx', os.path.basename(file_path))
         if match:
             identifier = match.group(1).strip()
@@ -63,9 +54,9 @@ def filter_excel_by_keyword(
         new_file_name = f"{output_prefix} {identifier} {output_suffix}.xlsx"
 
         df_filtered.to_excel(new_file_name, index=False)
-        print(f" Menyimpan {len(df_filtered)} baris ke '{new_file_name}'")
+        print(f"Menyimpan {len(df_filtered)} baris → '{new_file_name}'")
 
-    print("\nProses selesai.")
+    print("\nSelesai.")
 
 def load_and_combine_excel_data(glob_pattern: str, 
                                 year: int = 2025,
