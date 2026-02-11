@@ -8,7 +8,7 @@ def filter_excel_by_keyword(
     column_name="Item Name",
     output_prefix="LT",
     output_suffix="egfr",
-    standardize_name=False,
+    standardize_name=True,
     standardized_value="egfr"
 ):
     """
