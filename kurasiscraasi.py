@@ -303,6 +303,29 @@ def visit_interval_after_merge(
 
     return freq, df    
 
+def get_raasi_egfr_longitudinal(
+    df_raasi,
+    df_egfr,
+    raasi_col="MR No. / Vendor Code",
+    egfr_col="Medical Record No."
+):
+    """
+    Ambil seluruh riwayat eGFR untuk pasien yang pernah mendapat RAASI.
+    """
+
+    # pasien RAASI unik
+    raasi_patients = df_raasi[raasi_col].dropna().unique()
+
+    # filter eGFR hanya pasien RAASI
+    df_egfr_filtered = df_egfr[
+        df_egfr[egfr_col].isin(raasi_patients)
+    ].copy()
+
+    print(f"Jumlah pasien RAASI: {len(raasi_patients)}")
+    print(f"Jumlah baris eGFR untuk pasien RAASI: {len(df_egfr_filtered)}")
+
+    return df_egfr_filtered
+
 if __name__ == "__main__":
     if 0: # Kode untuk Memfilter
         filter_excel_by_keyword(
@@ -355,10 +378,12 @@ if __name__ == "__main__":
         df_raasi = pd.read_excel("D:\SKRIPSI\DATA RSUI\kurasiscraasicombined.xlsx")
         df_egfr = pd.read_excel("D:\SKRIPSI\DATA RSUI\kurasiegfrcombined.xlsx")
 
-        combined_results = raasi_egfr_combined(df_raasi, df_egfr)
+        df_long = get_raasi_egfr_longitudinal(df_raasi, df_egfr)
 
-        df_both = combined_results["df_both"]
-
-        freq, df_interval = visit_interval_after_merge(df_both)
+        freq, df_interval = visit_interval_after_merge(
+            df_long,
+            patient_col="Medical Record No.",
+            date_col="Order Date"
+        )
         
         print("selesai")
