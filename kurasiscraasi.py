@@ -62,12 +62,13 @@ def load_and_combine_excel_data(glob_pattern: str,
     for file_path in excel_files:
         df = pd.read_excel(file_path)
 
-        month = file_path.split(' ')[-2].replace('.xlsx', '')
+        month = file_path.split(' ')[-3].replace('.xlsx', '')
 
         df['Bulan'] = month
-        df['Tahun'] = year
+        df['Tahun'] = file_path.split(' ')[-2].replace('.xlsx', '')
 
         df_list.append(df)
+        print("test")
 
     df_combined = pd.concat(df_list, ignore_index=True)
     
@@ -362,7 +363,7 @@ if __name__ == "__main__":
 
         print("selesai")
 
-    if 0: # Kode untuk menggabungkan
+    if 1: # Kode untuk menggabungkan
         excel_file_template = "SC {Bulan} RAASi.xlsx"
         glob_pattern = f"D:\SKRIPSI\DATA RSUI\kurasiscraasi\{excel_file_template.replace('{Bulan}', '*')}"
         df_combined = load_and_combine_excel_data(glob_pattern)
@@ -374,7 +375,7 @@ if __name__ == "__main__":
         print(df_combined.head())
         df_combined.info()
     
-    if 1: # Analisis gabungan RAASI & eGFR
+    if 0: # Analisis gabungan RAASI & eGFR
         df_raasi = pd.read_excel("D:\SKRIPSI\DATA RSUI\kurasiscraasicombined.xlsx")
         df_egfr = pd.read_excel("D:\SKRIPSI\DATA RSUI\kurasiegfrcombined.xlsx")
 
