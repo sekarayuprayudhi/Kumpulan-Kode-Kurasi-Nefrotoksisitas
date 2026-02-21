@@ -68,7 +68,6 @@ def load_and_combine_excel_data(glob_pattern: str,
         df['Tahun'] = file_path.split(' ')[-2].replace('.xlsx', '')
 
         df_list.append(df)
-        print("test")
 
     df_combined = pd.concat(df_list, ignore_index=True)
     
@@ -369,7 +368,9 @@ if __name__ == "__main__":
         df_combined = load_and_combine_excel_data(glob_pattern)
         df_combined.to_excel("D:\SKRIPSI\DATA RSUI\kurasiscraasicombined.xlsx")
 
-        patient_visit_frequency(df_combined)
+        patient_visit_frequency(df_combined,
+                                patient_col="Patient Name / Vendor Name", 
+                                date_col="Created Date")
 
 
         print(df_combined.head())
@@ -384,7 +385,7 @@ if __name__ == "__main__":
         freq, df_interval = visit_interval_after_merge(
             df_long,
             patient_col="Medical Record No.",
-            date_col="Order Date"
+            date_col="Created Date"
         )
         
         print("selesai")
