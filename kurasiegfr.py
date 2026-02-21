@@ -33,7 +33,7 @@ def filter_excel_by_keyword(
 
     excel_files = glob.glob(excel_files_pattern)
     print(f"Found {len(excel_files)} Excel files matching the pattern '{excel_files_pattern}'.")
-    
+
     for file_path in excel_files:
         print(f"\nProcessing file: {file_path}")
 
@@ -42,13 +42,11 @@ def filter_excel_by_keyword(
         if column_name not in df.columns:
             print(f" Kolom '{column_name}' Tidak ditemukan. Skip file.")
             continue
-        #exact case
-        pattern = rf"\b{re.escape(filter_keyword)}\b"
-        
+
         df_filtered = df[
             df[column_name]
             .astype(str)
-            .str.contains(pattern, case=False, na=False, regex=True)
+            .str.contains(filter_keyword, case=True, na=False)
         ]
 
         if df_filtered.empty:
@@ -79,10 +77,10 @@ def load_and_combine_excel_data(glob_pattern: str,
     for file_path in excel_files:
         df = pd.read_excel(file_path)
 
-        month = file_path.split(' ')[-2].replace('.xlsx', '')
+        month = file_path.split(' ')[-3].replace('.xlsx', '')
 
         df['Bulan'] = month
-        df['Tahun'] = year
+        df['Tahun'] = file_path.split(' ')[-2].replace('.xlsx', '')
 
         df_list.append(df)
 
@@ -213,5 +211,4 @@ if __name__ == "__main__":
 
 
         print(df_combined.head())
-
         df_combined.info()
