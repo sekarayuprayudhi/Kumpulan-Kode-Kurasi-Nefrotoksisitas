@@ -362,7 +362,7 @@ if __name__ == "__main__":
 
         print("selesai")
 
-    if 1: # Kode untuk menggabungkan
+    if 0: # Kode untuk menggabungkan
         excel_file_template = "SC {Bulan} RAASi.xlsx"
         glob_pattern = f"D:\SKRIPSI\DATA RSUI\kurasiscraasi\{excel_file_template.replace('{Bulan}', '*')}"
         df_combined = load_and_combine_excel_data(glob_pattern)
@@ -376,7 +376,7 @@ if __name__ == "__main__":
         print(df_combined.head())
         df_combined.info()
     
-    if 0: # Analisis gabungan RAASI & eGFR
+    if 1: # Analisis gabungan RAASI & eGFR
         df_raasi = pd.read_excel("D:\SKRIPSI\DATA RSUI\kurasiscraasicombined.xlsx")
         df_egfr = pd.read_excel("D:\SKRIPSI\DATA RSUI\kurasiegfrcombined.xlsx")
 
@@ -384,8 +384,8 @@ if __name__ == "__main__":
 
         freq, df_interval = visit_interval_after_merge(
             df_long,
-            patient_col="Medical Record No.",
-            date_col="Created Date"
+            patient_col="Patient Name",
+            date_col="Order Date"
         )
         
         print("selesai")
