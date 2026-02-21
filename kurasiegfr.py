@@ -33,7 +33,7 @@ def filter_excel_by_keyword(
 
     excel_files = glob.glob(excel_files_pattern)
     print(f"Found {len(excel_files)} Excel files matching the pattern '{excel_files_pattern}'.")
-
+    
     for file_path in excel_files:
         print(f"\nProcessing file: {file_path}")
 
@@ -42,11 +42,13 @@ def filter_excel_by_keyword(
         if column_name not in df.columns:
             print(f" Kolom '{column_name}' Tidak ditemukan. Skip file.")
             continue
-
+        #exact case
+        pattern = rf"\b{re.escape(filter_keyword)}\b"
+        
         df_filtered = df[
             df[column_name]
             .astype(str)
-            .str.contains(filter_keyword, case=True, na=False)
+            .str.contains(pattern, case=False, na=False, regex=True)
         ]
 
         if df_filtered.empty:
@@ -211,4 +213,5 @@ if __name__ == "__main__":
 
 
         print(df_combined.head())
+
         df_combined.info()
