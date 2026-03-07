@@ -356,7 +356,11 @@ if __name__ == "__main__":
                  "TINOV 40 MG TABLET",
                  "TINOV 80 MG TABLET",
                  "UPERIO 50 MG TABLET",
-                 "UPERIO 200 MG TABLET"
+                 "UPERIO 200 MG TABLET",
+                 "EXFORGE 10 MG/160 MG TABLET",
+                 "EXFORGE 5 MG/80 MG TABLET",
+                 "CO IRVELL 300/12.5 MG TABLET",
+                 "CO APROVEL 150 MG/12,5 MG TABLET",
                  ),
         )
 
@@ -388,4 +392,20 @@ if __name__ == "__main__":
             date_col="Order Date"
         )
         
+        print("selesai")
+    
+    if 0: # Analisis perbandingan file sekar dan syakira
+        df1=pd.read_excel(r"D:\SKRIPSI\DATA RSUI\kurasiscraasicombinedsyakira.xlsx")
+        df2=pd.read_excel(r"D:\SKRIPSI\DATA RSUI\kurasiscraasicombinedsekar.xlsx")
+        diff_df1 = df1.merge(df2, how='left', indicator=True).query('_merge == "left_only"').drop(columns='_merge')
+
+        merged = df1.merge(df2, how='outer', indicator=True)
+
+        only_df1 = merged[merged['_merge'] == 'left_only']
+        only_df2 = merged[merged['_merge'] == 'right_only']
+
+        missing_rows = df1.merge(df2, how='left', indicator=True)\
+                  .query('_merge == "left_only"')\
+                  .drop(columns=['_merge'])
+
         print("selesai")
