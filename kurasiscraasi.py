@@ -52,27 +52,6 @@ def filter_excel_by_keyword(
 
     print("\nSelesai.")
 
-def load_and_combine_excel_data(glob_pattern: str, 
-                                year: int = 2025,
-                                ):
-    
-    excel_files = glob.glob(glob_pattern)
-    df_list = []
-
-    for file_path in excel_files:
-        df = pd.read_excel(file_path)
-
-        month = file_path.split(' ')[-3].replace('.xlsx', '')
-
-        df['Bulan'] = month
-        df['Tahun'] = file_path.split(' ')[-2].replace('.xlsx', '')
-
-        df_list.append(df)
-
-    df_combined = pd.concat(df_list, ignore_index=True)
-    
-    return df_combined
-
 def patient_visit_frequency(
     df,
     patient_col="Patient Name",
@@ -245,7 +224,143 @@ def raasi_egfr_combined(
         "set_egfr": set_egfr,
         "both": both
     }
+
+def clean_patient_names(df, 
+                        col="Patient Name / Vendor Name", 
+                        mr_col="MR No. / Vendor Code",
+                        dob_col="Date of Birth"):
+
+    df = df.copy()
+
+    if mr_col not in df.columns:
+        df[mr_col] = None
+
+    correction_mask = df[col].str.contains(r'^correction by dmp\s*-\s*', case=False, na=False)
+
+    correction_names = df.loc[correction_mask, col].str.replace(
+        r'^correction by dmp\s*-\s*', '', regex=True, flags=re.IGNORECASE
+    )
+
+    def normalize_name(x):
+        if pd.isna(x):
+            return ""
+        x = re.sub(r"\.\s*(TN|NY)", "", x, flags=re.IGNORECASE)
+        x = re.sub(r"-\d+.*", "", x)
+        return x.strip().lower()
+
+    df["_name_norm"] = df[col].apply(normalize_name)
+
+    for idx, name in correction_names.items():
+
+        norm = normalize_name(name)
+
+        match = df[
+            (~correction_mask) &
+            (df["_name_norm"] == norm) &
+            (df[mr_col].notna())
+        ]
+
+        if len(match) > 0:
+            df.at[idx, mr_col] = match.iloc[0][mr_col]
+
+    df[col] = df[col].str.replace(
+        r'^correction by dmp\s*-\s*', '', regex=True, flags=re.IGNORECASE
+    )
+
+
+    df["Kelamin"] = "Tidak_ada"
+
+    df.loc[df[col].str.contains(r"\.\s*tn", case=False, na=False), "Kelamin"] = "Pria"
+    df.loc[df[col].str.contains(r"\,\s*tn", case=False, na=False), "Kelamin"] = "Pria"
+    df.loc[df[col].str.contains(r"\.\s*ny", case=False, na=False), "Kelamin"] = "Perempuan"
+    df.loc[df[col].str.contains(r"\,\s*ny", case=False, na=False), "Kelamin"] = "Perempuan"
+    df.loc[df[col].str.contains(r"\.\s*nn", case=False, na=False), "Kelamin"] = "Perempuan"
+    df.loc[df[col].str.contains(r"\,\s*nn", case=False, na=False), "Kelamin"] = "Perempuan"
+
+    extracted_mr = df[col].str.extract(r'-(?:\d+)-(\d+)')[0]
+
+    mask = df[mr_col].isna() | (df[mr_col].astype(str).str.strip() == "")
+    df.loc[mask, mr_col] = extracted_mr[mask]
+
+    def clean_name(x):
+        if pd.isna(x):
+            return x
+
+        x = re.sub(r"\.\s*(TN|NY)", "", x, flags=re.IGNORECASE)
+        x = re.sub(r"-\d+.*", "", x)
+
+        return x.strip()
+
+    df[col] = df[col].apply(clean_name)
+
+    df["_name_key"] = df[col].str.lower().str.strip()
+
+    # ---- MR ----
+    mr_map = (
+        df[df[mr_col].notna()]
+        .groupby("_name_key")[mr_col]
+        .first()
+    )
+
+    mask = df[mr_col].isna() | (df[mr_col].astype(str).str.strip() == "")
+    df.loc[mask, mr_col] = df.loc[mask, "_name_key"].map(mr_map)
+
+    # ---- Date of Birth ----
+    if dob_col in df.columns:
+
+        dob_map = (
+            df[df[dob_col].notna()]
+            .groupby("_name_key")[dob_col]
+            .first()
+        )
+
+        mask = df[dob_col].isna()
+        df.loc[mask, dob_col] = df.loc[mask, "_name_key"].map(dob_map)
+
+    # ---- Kelamin ----
+    kel_map = (
+        df[df["Kelamin"] != "Tidak_ada"]
+        .groupby("_name_key")["Kelamin"]
+        .first()
+    )
+
+    mask = df["Kelamin"] == "Tidak_ada"
+    df.loc[mask, "Kelamin"] = df.loc[mask, "_name_key"].map(kel_map)
+
+    df = df.drop(columns=["_name_norm", "_name_key"])
+
+    # ---- (B) & (T) ----
+    df["Patient Name / Vendor Name"] = df["Patient Name / Vendor Name"].str.replace(
+        r"^\([A-Za-z]\)-", 
+        "", 
+        regex=True)
+
+    # ---- Nama Kapital ----
+    df["Patient Name / Vendor Name"] = df["Patient Name / Vendor Name"].str.title()
     
+    return df
+
+def load_and_combine_excel_data(glob_pattern: str, 
+                                year: int = 2025,
+                                ):
+    
+    excel_files = glob.glob(glob_pattern)
+    df_list = []
+
+    for file_path in excel_files:
+        df = pd.read_excel(file_path)
+
+        month = file_path.split(' ')[-3].replace('.xlsx', '')
+
+        df['Bulan'] = month
+        df['Tahun'] = file_path.split(' ')[-2].replace('.xlsx', '')
+
+        df_list.append(df)
+
+    df_combined = pd.concat(df_list, ignore_index=True)
+    
+    return df_combined
+
 def visit_interval_after_merge(
     df_both,
     patient_col="Medical Record No.",
@@ -302,6 +417,43 @@ def visit_interval_after_merge(
         plt.show()
 
     return freq, df    
+
+def filter_patient_3_months(
+    input_file="raasifinal.xlsx",
+    output_file="raasifinal3bulan.xlsx",
+    patient_col="MR No. / Vendor Code",
+    date_col="Created Date"
+):
+
+    df = pd.read_excel(input_file)
+
+    df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+
+    visit_range = (
+        df.groupby(patient_col)[date_col]
+        .agg(["min", "max"])
+    )
+
+    visit_range["delta_days"] = (
+        visit_range["max"] - visit_range["min"]
+    ).dt.days
+
+    # ≥ 3 bulan ≈ 90 hari
+    valid_patients = visit_range[
+        visit_range["delta_days"] >= 90
+    ].index
+
+    df_filtered = df[
+        df[patient_col].isin(valid_patients)
+    ]
+
+    print("Total pasien:", df[patient_col].nunique())
+    print("Pasien ≥3 bulan:", len(valid_patients))
+    print("Total baris tersimpan:", len(df_filtered))
+
+    df_filtered.to_excel(output_file, index=False)
+
+    print(f"File saved: {output_file}")
 
 def get_raasi_egfr_longitudinal(
     df_raasi,
@@ -380,8 +532,20 @@ if __name__ == "__main__":
         print(df_combined.head())
         df_combined.info()
     
-    if 1: # Analisis gabungan RAASI & eGFR
-        df_raasi = pd.read_excel("D:\SKRIPSI\DATA RSUI\kurasiscraasicombined.xlsx")
+    if 0: # Kode untuk memindahkan no MR, add kolom jenis kelamin, (B) & (T)
+        df_combined = pd.read_excel("D:\SKRIPSI\DATA RSUI\kurasiscraasicombined.xlsx", index_col=0)
+        df_raasifinal = clean_patient_names(df_combined)
+        df_raasifinal = df_raasifinal = df_raasifinal.dropna(subset=["MR No. / Vendor Code"])
+
+        print("selesai")
+
+    if 0: # Kode untuk filter pasien minimal durasi pengobatan 3 bulan
+        filter_patient_3_months(input_file=r"D:\SKRIPSI\DATA RSUI\raasifinal.xlsx", output_file=r"D:\SKRIPSI\DATA RSUI\raasifinal3bulan.xlsx")
+        
+        print("selesai")
+
+    if 0: # Analisis gabungan RAASI & eGFR
+        df_raasi = pd.read_excel(r"D:\SKRIPSI\DATA RSUI\raasifinal3bulan.xlsx")
         df_egfr = pd.read_excel("D:\SKRIPSI\DATA RSUI\kurasiegfrcombined.xlsx")
 
         df_long = get_raasi_egfr_longitudinal(df_raasi, df_egfr)
@@ -394,18 +558,11 @@ if __name__ == "__main__":
         
         print("selesai")
     
-    if 0: # Analisis perbandingan file sekar dan syakira
-        df1=pd.read_excel(r"D:\SKRIPSI\DATA RSUI\kurasiscraasicombinedsyakira.xlsx")
-        df2=pd.read_excel(r"D:\SKRIPSI\DATA RSUI\kurasiscraasicombinedsekar.xlsx")
+    if 1: # Analisis perbandingan file sekar dan syakira
+        df1=pd.read_excel(r"D:\SKRIPSI\DATA RSUI\raasifinal3bulansyakira.xlsx")
+        df2=pd.read_excel(r"D:\SKRIPSI\DATA RSUI\raasifinal3bulan.xlsx")
         diff_df1 = df1.merge(df2, how='left', indicator=True).query('_merge == "left_only"').drop(columns='_merge')
 
-        merged = df1.merge(df2, how='outer', indicator=True)
-
-        only_df1 = merged[merged['_merge'] == 'left_only']
-        only_df2 = merged[merged['_merge'] == 'right_only']
-
-        missing_rows = df1.merge(df2, how='left', indicator=True)\
-                  .query('_merge == "left_only"')\
-                  .drop(columns=['_merge'])
+        missing_rows = set(df1["Patient Name / Vendor Name"]) - set(df1["Patient Name / Vendor Name"])
 
         print("selesai")
