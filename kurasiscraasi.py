@@ -52,6 +52,27 @@ def filter_excel_by_keyword(
 
     print("\nSelesai.")
 
+def load_and_combine_excel_data(glob_pattern: str, 
+                                year: int = 2025,
+                                ):
+    
+    excel_files = glob.glob(glob_pattern)
+    df_list = []
+
+    for file_path in excel_files:
+        df = pd.read_excel(file_path)
+
+        month = file_path.split(' ')[-3].replace('.xlsx', '')
+
+        df['Bulan'] = month
+        df['Tahun'] = file_path.split(' ')[-2].replace('.xlsx', '')
+
+        df_list.append(df)
+
+    df_combined = pd.concat(df_list, ignore_index=True)
+    
+    return df_combined
+
 def patient_visit_frequency(
     df,
     patient_col="Patient Name",
@@ -156,75 +177,6 @@ def patient_visit_frequency(
 
     return intervals_df, freq_days, freq_weeks
 
-def raasi_egfr_combined(
-    df_raasi,
-    df_egfr,
-    raasi_col="MR No. / Vendor Code",
-    egfr_col="Medical Record No.",
-    make_plot=False
-):
-    """
-    1. Menghapus duplikasi MR pada masing-masing dataframe
-    2. Menggabungkan pasien RAASI & eGFR
-    3. Menghitung distribusi frekuensi
-    4. (Opsional) Membuat bar plot frekuensi
-    """
-
-  
-    raasi_unique = df_raasi.drop_duplicates(subset=raasi_col)
-    egfr_unique = df_egfr.drop_duplicates(subset=egfr_col)
-
-    print(f"RAASI unik : {len(raasi_unique)} pasien")
-    print(f"eGFR unik  : {len(egfr_unique)} pasien")
-
-
-    set_raasi = set(raasi_unique[raasi_col].dropna())
-    set_egfr = set(egfr_unique[egfr_col].dropna())
-
-    both = set_raasi & set_egfr
-    only_raasi = set_raasi - set_egfr
-    only_egfr = set_egfr - set_raasi
-
- 
-    freq_dict = {
-        "RAASI only": len(only_raasi),
-        "eGFR only": len(only_egfr),
-        "Both RAASI & eGFR": len(both),
-    }
-
-    freq_df = pd.DataFrame.from_dict(freq_dict, orient="index", columns=["count"])
-
-    print("\nDistribusi pasien:")
-    print(freq_df)
-
-
-    if make_plot:
-        plt.figure(figsize=(6, 4))
-        plt.bar(freq_df.index, freq_df["count"])
-        plt.ylabel("Jumlah Pasien")
-        plt.title("Distribusi Pasien RAASI vs eGFR")
-        plt.xticks(rotation=20)
-        plt.tight_layout()
-        plt.show()
-
-    df_both = pd.merge(
-        raasi_unique,
-        egfr_unique,
-        left_on=raasi_col,
-        right_on=egfr_col,
-        how="inner"
-    )
-
-    print(f"\nJumlah pasien dengan RAASI & eGFR: {len(df_both)}")
-
-    return {
-        "freq_df": freq_df,
-        "df_both": df_both,
-        "set_raasi": set_raasi,
-        "set_egfr": set_egfr,
-        "both": both
-    }
-
 def clean_patient_names(df, 
                         col="Patient Name / Vendor Name", 
                         mr_col="MR No. / Vendor Code",
@@ -267,7 +219,6 @@ def clean_patient_names(df,
         r'^correction by dmp\s*-\s*', '', regex=True, flags=re.IGNORECASE
     )
 
-
     df["Kelamin"] = "Tidak_ada"
 
     df.loc[df[col].str.contains(r"\.\s*tn", case=False, na=False), "Kelamin"] = "Pria"
@@ -295,6 +246,16 @@ def clean_patient_names(df,
 
     df["_name_key"] = df[col].str.lower().str.strip()
 
+    # ---- (B) & (T) ----
+    df["Patient Name / Vendor Name"] = df["Patient Name / Vendor Name"].str.replace(
+        r"^\([A-Za-z]\)-", 
+        "", 
+        regex=True
+        )
+    
+    # ---- Nama Kapital ----
+    df["Patient Name / Vendor Name"] = df["Patient Name / Vendor Name"].str.title()
+   
     # ---- MR ----
     mr_map = (
         df[df[mr_col].notna()]
@@ -304,6 +265,23 @@ def clean_patient_names(df,
 
     mask = df[mr_col].isna() | (df[mr_col].astype(str).str.strip() == "")
     df.loc[mask, mr_col] = df.loc[mask, "_name_key"].map(mr_map)
+
+    #df["MR No. / Vendor Code"] = (
+    df["MR No. / Vendor Code"]
+    .astype(str)         
+    .str.replace(".0","", regex=False)  
+    .str.zfill(8)         
+    )
+
+    # ---- Kelamin ----
+    kel_map = (
+        df[df["Kelamin"] != "Tidak_ada"]
+        .groupby("_name_key")["Kelamin"]
+        .first()
+    )
+
+    mask = df["Kelamin"] == "Tidak_ada"
+    df.loc[mask, "Kelamin"] = df.loc[mask, "_name_key"].map(kel_map)
 
     # ---- Date of Birth ----
     if dob_col in df.columns:
@@ -316,50 +294,119 @@ def clean_patient_names(df,
 
         mask = df[dob_col].isna()
         df.loc[mask, dob_col] = df.loc[mask, "_name_key"].map(dob_map)
-
-    # ---- Kelamin ----
-    kel_map = (
-        df[df["Kelamin"] != "Tidak_ada"]
-        .groupby("_name_key")["Kelamin"]
-        .first()
-    )
-
-    mask = df["Kelamin"] == "Tidak_ada"
-    df.loc[mask, "Kelamin"] = df.loc[mask, "_name_key"].map(kel_map)
-
+    
     df = df.drop(columns=["_name_norm", "_name_key"])
 
-    # ---- (B) & (T) ----
-    df["Patient Name / Vendor Name"] = df["Patient Name / Vendor Name"].str.replace(
-        r"^\([A-Za-z]\)-", 
-        "", 
-        regex=True)
-
-    # ---- Nama Kapital ----
-    df["Patient Name / Vendor Name"] = df["Patient Name / Vendor Name"].str.title()
-    
     return df
 
-def load_and_combine_excel_data(glob_pattern: str, 
-                                year: int = 2025,
-                                ):
-    
-    excel_files = glob.glob(glob_pattern)
-    df_list = []
+def filter_patient_3_months(
+    input_file="raasifinal.xlsx",
+    output_file="raasifinal3bulan.xlsx",
+    patient_col="MR No. / Vendor Code",
+    date_col="Created Date"
+):
 
-    for file_path in excel_files:
-        df = pd.read_excel(file_path)
+    df = pd.read_excel(input_file)
 
-        month = file_path.split(' ')[-3].replace('.xlsx', '')
+    df[date_col] = pd.to_datetime(
+        df[date_col],
+        dayfirst=True,
+        errors="coerce"
+    ).dt.normalize()  # hapus jam
 
-        df['Bulan'] = month
-        df['Tahun'] = file_path.split(' ')[-2].replace('.xlsx', '')
+    visit_range = (
+        df.groupby(patient_col)[date_col]
+        .agg(["min", "max"])
+    )
 
-        df_list.append(df)
+    visit_range["delta_days"] = (
+        visit_range["max"] - visit_range["min"]
+    ).dt.days
 
-    df_combined = pd.concat(df_list, ignore_index=True)
-    
-    return df_combined
+    # ≥ 3 bulan ≈ 90 hari
+    valid_patients = visit_range[
+        visit_range["delta_days"] >= 90
+    ].index
+
+    df_filtered = df[
+        df[patient_col].isin(valid_patients)
+    ]
+
+    print("Total pasien:", df[patient_col].nunique())
+    print("Pasien ≥3 bulan:", len(valid_patients))
+    print("Total baris tersimpan:", len(df_filtered))
+
+    df_filtered.to_excel(output_file, index=False)
+
+    print(f"File saved: {output_file}")
+
+def raasi_egfr_combined(
+    df_raasi,
+    df_egfr,
+    raasi_col="MR No. / Vendor Code",
+    egfr_col="Medical Record No.",
+    make_plot=False
+):
+    """
+    1. Menghapus duplikasi MR pada masing-masing dataframe
+    2. Menggabungkan pasien RAASI & eGFR
+    3. Menghitung distribusi frekuensi
+    4. (Opsional) Membuat bar plot frekuensi
+    """
+
+  
+    raasi_unique = df_raasi.drop_duplicates(subset=raasi_col)
+    egfr_unique = df_egfr.drop_duplicates(subset=egfr_col)
+
+    print(f"RAASI unik : {len(raasi_unique)} pasien")
+    print(f"eGFR unik  : {len(egfr_unique)} pasien")
+
+
+    set_raasi = set(raasi_unique[raasi_col].dropna())
+    set_egfr = set(egfr_unique[egfr_col].dropna())
+
+    both = set_raasi & set_egfr
+    only_raasi = set_raasi - set_egfr
+    only_egfr = set_egfr - set_raasi
+
+ 
+    freq_dict = {
+        "RAASI only": len(only_raasi),
+        "eGFR only": len(only_egfr),
+        "Both RAASI & eGFR": len(both),
+    }
+
+    freq_df = pd.DataFrame.from_dict(freq_dict, orient="index", columns=["count"])
+
+    print("\nDistribusi pasien:")
+    print(freq_df)
+
+    if make_plot:
+        plt.figure(figsize=(6, 4))
+        plt.bar(freq_df.index, freq_df["count"])
+        plt.ylabel("Jumlah Pasien")
+        plt.title("Distribusi Pasien RAASI vs eGFR")
+        plt.xticks(rotation=20)
+        plt.tight_layout()
+        plt.show()
+
+    df_both = pd.merge(
+        raasi_unique,
+        egfr_unique,
+        left_on=raasi_col,
+        right_on=egfr_col,
+        how="inner"
+    )
+
+    print(f"\nJumlah pasien dengan RAASI & eGFR: {len(df_both)}")
+
+    return {
+        "freq_df": freq_df,
+        "df_both": df_both,
+        "set_raasi": set_raasi,
+        "set_egfr": set_egfr,
+        "both": both
+    }
 
 def visit_interval_after_merge(
     df_both,
@@ -417,43 +464,6 @@ def visit_interval_after_merge(
         plt.show()
 
     return freq, df    
-
-def filter_patient_3_months(
-    input_file="raasifinal.xlsx",
-    output_file="raasifinal3bulan.xlsx",
-    patient_col="MR No. / Vendor Code",
-    date_col="Created Date"
-):
-
-    df = pd.read_excel(input_file)
-
-    df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
-
-    visit_range = (
-        df.groupby(patient_col)[date_col]
-        .agg(["min", "max"])
-    )
-
-    visit_range["delta_days"] = (
-        visit_range["max"] - visit_range["min"]
-    ).dt.days
-
-    # ≥ 3 bulan ≈ 90 hari
-    valid_patients = visit_range[
-        visit_range["delta_days"] >= 90
-    ].index
-
-    df_filtered = df[
-        df[patient_col].isin(valid_patients)
-    ]
-
-    print("Total pasien:", df[patient_col].nunique())
-    print("Pasien ≥3 bulan:", len(valid_patients))
-    print("Total baris tersimpan:", len(df_filtered))
-
-    df_filtered.to_excel(output_file, index=False)
-
-    print(f"File saved: {output_file}")
 
 def get_raasi_egfr_longitudinal(
     df_raasi,
@@ -528,7 +538,6 @@ if __name__ == "__main__":
                                 patient_col="Patient Name / Vendor Name", 
                                 date_col="Created Date")
 
-
         print(df_combined.head())
         df_combined.info()
     
@@ -558,11 +567,11 @@ if __name__ == "__main__":
         
         print("selesai")
     
-    if 1: # Analisis perbandingan file sekar dan syakira
-        df1=pd.read_excel(r"D:\SKRIPSI\DATA RSUI\raasifinal3bulansyakira.xlsx")
-        df2=pd.read_excel(r"D:\SKRIPSI\DATA RSUI\raasifinal3bulan.xlsx")
+    if 0: # Analisis perbandingan file sekar dan syakira
+        df1=pd.read_excel(r"D:\SKRIPSI\DATA RSUI\raasifinalsyakira.xlsx")
+        df2=pd.read_excel(r"D:\SKRIPSI\DATA RSUI\raasifinal.xlsx")
         diff_df1 = df1.merge(df2, how='left', indicator=True).query('_merge == "left_only"').drop(columns='_merge')
 
-        missing_rows = set(df1["Patient Name / Vendor Name"]) - set(df1["Patient Name / Vendor Name"])
+        missing_rows = set(df2["MR No. / Vendor Code"]) - set(df1["MR No. / Vendor Code"])
 
         print("selesai")
