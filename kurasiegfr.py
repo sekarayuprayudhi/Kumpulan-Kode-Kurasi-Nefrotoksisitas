@@ -60,7 +60,7 @@ def filter_excel_by_keyword(
         else:
             identifier = os.path.splitext(os.path.basename(file_path))[0]
 
-        new_file_name = f"D:/{output_prefix} {identifier} {output_suffix}.xlsx"
+        new_file_name = f"{output_prefix} {identifier} {output_suffix}.xlsx"
 
         df_filtered.to_excel(new_file_name, index=False)
         print(f" Menyimpan {len(df_filtered)} baris ke '{new_file_name}'")
@@ -130,6 +130,8 @@ def patient_visit_frequency(
 
     intervals_days = []
     intervals_weeks = []
+    billing_no = []
+    med_rec = []
 
     # Mengitung interval antar kunjungan per pasien
     for _, group in df.groupby(patient_col):
@@ -141,10 +143,16 @@ def patient_visit_frequency(
         deltas = dates.diff().dropna()
         intervals_days.append(deltas.dt.days.max())
         intervals_weeks.append(deltas.dt.days.max() / 7)
+        billing_no.append(list(group["Billing No."]))
+        med_rec.append(list(group["Medical Record No."]))
+
 
     intervals_df = pd.DataFrame({
         "interval_days": intervals_days,
-        "interval_weeks": intervals_weeks
+        "interval_weeks": intervals_weeks,
+        "billing": billing_no,
+        "Medical Record No.": med_rec
+
     })
 
     # Distribusi hari
@@ -195,7 +203,7 @@ def patient_visit_frequency(
 if __name__ == "__main__":
     if 0: # Kode untuk Memfilter
         filter_excel_by_keyword(
-        excel_files_pattern="D:\SKRIPSI\DATA RSUI\lab test\LT *.xlsx",
+        excel_files_pattern="/Users/lathifasyakira/Desktop/SKRIPSI/LabTest/LT *.xlsx",
         filter_keyword="eGFR"
         )
     
@@ -203,12 +211,13 @@ if __name__ == "__main__":
 
     if 1: # Kode untuk menggabungkan
         excel_file_template = "LT {Bulan} egfr.xlsx"
-        glob_pattern = f"D:\SKRIPSI\DATA RSUI\kurasiegfr\{excel_file_template.replace('{Bulan}', '*')}"
+        glob_pattern = f"/Users/lathifasyakira/Desktop/SKRIPSI/kurasiegfr/{excel_file_template.replace('{Bulan}', '*')}"
         df_combined = load_and_combine_excel_data(glob_pattern)
-        df_combined.to_excel("D:\SKRIPSI\DATA RSUI\kurasiegfrcombined.xlsx")
+        #df_combined.to_excel("/Users/lathifasyakira/Desktop/SKRIPSI/kurasiegfrcombined.xlsx")
 
-        patient_visit_frequency(df_combined)
+        intervals_df, freq_days, freq_weeks= patient_visit_frequency(df_combined)
 
 
         print(df_combined.head())
+        intervals_df.to_excel("/Users/lathifasyakira/Desktop/SKRIPSI/kurasiegfrinterval.xlsx")
         df_combined.info()
