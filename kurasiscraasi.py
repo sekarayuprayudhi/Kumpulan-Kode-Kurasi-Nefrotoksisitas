@@ -267,11 +267,11 @@ def clean_patient_names(df,
     df.loc[mask, mr_col] = df.loc[mask, "_name_key"].map(mr_map)
 
     #df["MR No. / Vendor Code"] = (
-    df["MR No. / Vendor Code"]
-    .astype(str)         
-    .str.replace(".0","", regex=False)  
-    .str.zfill(8)         
-    )
+    #df["MR No. / Vendor Code"]
+    #.astype(str)         
+    #.str.replace(".0","", regex=False)  
+    #.str.zfill(8)         
+    #)
 
     # ---- Kelamin ----
     kel_map = (
@@ -303,6 +303,7 @@ def filter_patient_3_months(
     input_file="raasifinal.xlsx",
     output_file="raasifinal3bulan.xlsx",
     patient_col="MR No. / Vendor Code",
+    golob_file = "gol_ob.xlsx",
     date_col="Created Date"
 ):
 
@@ -328,6 +329,13 @@ def filter_patient_3_months(
         visit_range["delta_days"] >= 90
     ].index
 
+    df["delta_days_raasi"] = df["MR No. / Vendor Code"].map(
+    visit_range["delta_days"])
+    
+    golongan_obat = pd.read_excel(golob_file)
+    df["Golongan"] = df["Item Code"].map(
+    golongan_obat.set_index("Item Code")["Golongan"]
+)
     df_filtered = df[
         df[patient_col].isin(valid_patients)
     ]
@@ -431,16 +439,14 @@ def visit_interval_after_merge(
         .diff()
         .dt.days
     )
-
+    #memotong di bawah 3 bulan
+    df = df[df["delta_days"]>90]
+    
     intervals = df["delta_days"].dropna()
 
-    bins = [0, 14, 30, 60, 90, 180, 365, np.inf]
+    bins = [90, 180, 365, np.inf]
 
     labels = [
-        "1–2 minggu",
-        "2–4 minggu",
-        "1–2 bulan",
-        "2–3 bulan",
         "3–6 bulan",
         "6–12 bulan",
         ">12 bulan"
@@ -469,7 +475,8 @@ def get_raasi_egfr_longitudinal(
     df_raasi,
     df_egfr,
     raasi_col="MR No. / Vendor Code",
-    egfr_col="Medical Record No."
+    egfr_col="Medical Record No.", 
+    file_golob ="gol_ob.xlsx"
 ):
     """
     Ambil seluruh riwayat eGFR untuk pasien yang pernah mendapat RAASI.
@@ -484,8 +491,8 @@ def get_raasi_egfr_longitudinal(
     ].copy()
 
     print(f"Jumlah pasien RAASI: {len(raasi_patients)}")
-    print(f"Jumlah baris eGFR untuk pasien RAASI: {len(df_egfr_filtered)}")
-
+    print(f"Jumlah baris eGFR untuk pasien RAASI: {len(df_egfr_filtered)}")    
+    print("test")
     return df_egfr_filtered
 
 if __name__ == "__main__":
@@ -553,9 +560,9 @@ if __name__ == "__main__":
         
         print("selesai")
 
-    if 0: # Analisis gabungan RAASI & eGFR
+    if 1: # Analisis gabungan RAASI & eGFR
         df_raasi = pd.read_excel(r"D:\SKRIPSI\DATA RSUI\raasifinal3bulan.xlsx")
-        df_egfr = pd.read_excel("D:\SKRIPSI\DATA RSUI\kurasiegfrcombined.xlsx")
+        df_egfr = pd.read_excel("D:\SKRIPSI\DATA RSUI\kurasiegfrcombinedinterval.xlsx")
 
         df_long = get_raasi_egfr_longitudinal(df_raasi, df_egfr)
 
@@ -565,6 +572,20 @@ if __name__ == "__main__":
             date_col="Order Date"
         )
         
+        df_interval.set_index("Medical Record No.")
+        df_raasi.set_index("MR No. / Vendor Code")
+        #golongan obat
+
+        df_interval["delta_days_raasi"] = df_interval.map(
+        df_raasi["delta_days_raasi"])
+    
+        df_interval["delta_days_raasi"] = df_interval.index.map(df_raasi["delta_days_raasi"]
+                                                                )
+        #golongan_obat = pd.read_excel("gol_ob.xlsx")
+        df_interval["Golongan"] = df_interval.index.map(
+        df_raasi["Golongan"]
+    )   
+
         print("selesai")
     
     if 0: # Analisis perbandingan file sekar dan syakira
