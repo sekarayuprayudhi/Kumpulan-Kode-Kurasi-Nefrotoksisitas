@@ -2,6 +2,7 @@ import glob, os, re
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
+import ast, math
 
 def filter_excel_by_keyword(
     excel_files_pattern,
@@ -115,8 +116,11 @@ def patient_visit_frequency(
 
     intervals_days = []
     intervals_weeks = []
+    billing_no = []
+    med_rec = []
 
     # Mengitung interval antar kunjungan per pasien
+    # interval ga buat billing, tapi buat nentuin perbedaan uji egfr aja
     for _, group in df.groupby(patient_col):
         dates = group[date_col].dropna().sort_values()
 
@@ -124,24 +128,27 @@ def patient_visit_frequency(
             continue
 
         deltas = dates.diff().dropna()
-        intervals_days.append(deltas.dt.days.max())
-        intervals_weeks.append(deltas.dt.days.max() / 7)
+        intervals_week = (deltas.dt.days.sum()/7)
+
+        if intervals_week > 12:
+            intervals_days.append(deltas.dt.days.sum())
+            intervals_weeks.append(deltas.dt.days.sum() / 7)
+            billing_no.append(list(group["Billing No."]))
+            med_rec.append(group["MR No. / Vendor Code"].values[0])
 
     intervals_df = pd.DataFrame({
         "interval_days": intervals_days,
-        "interval_weeks": intervals_weeks
+        "interval_weeks": intervals_weeks,
+        "billing": billing_no,
+        "Medical Record No.": med_rec
     })
 
     # Distribusi hari
     freq_days = intervals_df["interval_days"].value_counts().sort_index()
 
     # Bin mingguan 
-    bins = [1, 2, 4, 8, 12, 24, 52, 1000]
+    bins = [12, 24, 52, 1000]
     labels = [
-        "1–2 minggu",
-        "2–4 minggu",
-        "1–2 bulan",
-        "2–3 bulan",
         "3–6 bulan",
         "6–12 bulan",
         ">12 bulan"
@@ -177,6 +184,287 @@ def patient_visit_frequency(
 
     return intervals_df, freq_days, freq_weeks
 
+def clean_patient_names(df, 
+                        col="Patient Name / Vendor Name", 
+                        mr_col="MR No. / Vendor Code",
+                        dob_col="Date of Birth"):
+
+    df = df.copy()
+
+    if mr_col not in df.columns:
+        df[mr_col] = None
+
+    correction_mask = df[col].str.contains(r'^correction by dmp\s*-\s*', case=False, na=False)
+
+    correction_names = df.loc[correction_mask, col].str.replace(
+        r'^correction by dmp\s*-\s*', '', regex=True, flags=re.IGNORECASE
+    )
+
+    def normalize_name(x):
+        if pd.isna(x):
+            return ""
+        x = re.sub(r"\.\s*(TN|NY)", "", x, flags=re.IGNORECASE)
+        x = re.sub(r"-\d+.*", "", x)
+        return x.strip().lower()
+
+    df["_name_norm"] = df[col].apply(normalize_name)
+
+    for idx, name in correction_names.items():
+
+        norm = normalize_name(name)
+
+        match = df[
+            (~correction_mask) &
+            (df["_name_norm"] == norm) &
+            (df[mr_col].notna())
+        ]
+
+        if len(match) > 0:
+            df.at[idx, mr_col] = match.iloc[0][mr_col]
+
+    df[col] = df[col].str.replace(
+        r'^correction by dmp\s*-\s*', '', regex=True, flags=re.IGNORECASE
+    )
+
+    df["Kelamin"] = "Tidak_ada"
+
+    df.loc[df[col].str.contains(r"\.\s*tn", case=False, na=False), "Kelamin"] = "Pria"
+    df.loc[df[col].str.contains(r"\,\s*tn", case=False, na=False), "Kelamin"] = "Pria"
+    df.loc[df[col].str.contains(r"\.\s*ny", case=False, na=False), "Kelamin"] = "Perempuan"
+    df.loc[df[col].str.contains(r"\,\s*ny", case=False, na=False), "Kelamin"] = "Perempuan"
+    df.loc[df[col].str.contains(r"\.\s*nn", case=False, na=False), "Kelamin"] = "Perempuan"
+    df.loc[df[col].str.contains(r"\,\s*nn", case=False, na=False), "Kelamin"] = "Perempuan"
+
+    extracted_mr = df[col].str.extract(r'-(?:\d+)-(\d+)')[0]
+
+    mask = df[mr_col].isna() | (df[mr_col].astype(str).str.strip() == "")
+    df.loc[mask, mr_col] = extracted_mr[mask]
+
+    def clean_name(x):
+        if pd.isna(x):
+            return x
+
+        x = re.sub(r"\.\s*(TN|NY)", "", x, flags=re.IGNORECASE)
+        x = re.sub(r"-\d+.*", "", x)
+
+        return x.strip()
+
+    df[col] = df[col].apply(clean_name)
+
+    df["_name_key"] = df[col].str.lower().str.strip()
+
+    # ---- (B) & (T) ----
+    df["Patient Name / Vendor Name"] = df["Patient Name / Vendor Name"].str.replace(
+        r"^\([A-Za-z]\)-", 
+        "", 
+        regex=True
+        )
+    
+    # ---- Nama Kapital ----
+    df["Patient Name / Vendor Name"] = df["Patient Name / Vendor Name"].str.title()
+   
+    # ---- MR ----
+    mr_map = (
+        df[df[mr_col].notna()]
+        .groupby("_name_key")[mr_col]
+        .first()
+    )
+
+    mask = df[mr_col].isna() | (df[mr_col].astype(str).str.strip() == "")
+    df.loc[mask, mr_col] = df.loc[mask, "_name_key"].map(mr_map)
+
+    #df["MR No. / Vendor Code"] = (
+    #df["MR No. / Vendor Code"]
+    #.astype(str)         
+    #.str.replace(".0","", regex=False)  
+    #.str.zfill(8)         
+    #)
+
+    # ---- Kelamin ----
+    kel_map = (
+        df[df["Kelamin"] != "Tidak_ada"]
+        .groupby("_name_key")["Kelamin"]
+        .first()
+    )
+
+    mask = df["Kelamin"] == "Tidak_ada"
+    df.loc[mask, "Kelamin"] = df.loc[mask, "_name_key"].map(kel_map)
+
+    # ---- Date of Birth ----
+    if dob_col in df.columns:
+
+        dob_map = (
+            df[df[dob_col].notna()]
+            .groupby("_name_key")[dob_col]
+            .first()
+        )
+
+        mask = df[dob_col].isna()
+        df.loc[mask, dob_col] = df.loc[mask, "_name_key"].map(dob_map)
+    
+    df = df.drop(columns=["_name_norm", "_name_key"])
+
+    return df
+
+def filter_patient_3_months_with_coverage(
+    input_file="diuretikfinal.xlsx",
+    output_file="diuretikfinal3bulan_80coverage.xlsx",
+    patient_col="MR No. / Vendor Code",
+    golob_file="gol_ob.xlsx",
+    date_col="Created Date"
+):
+    #delta days diuretik yang bener
+
+    import pandas as pd
+
+    df = pd.read_excel(input_file)
+
+    # PREPROCESS DATE
+    df[date_col] = pd.to_datetime(
+        df[date_col],
+        dayfirst=True,
+        errors="coerce"
+    ).dt.normalize()  # hapus jam
+
+    # VISIT RANGE (MIN MAX)
+    visit_range = (
+        df.groupby(patient_col)[date_col]
+        .agg(["min", "max"])
+    )
+
+    visit_range["delta_days"] = (
+        visit_range["max"] - visit_range["min"]
+    ).dt.days
+
+    # MONTH COVERAGE
+    df["year_month"] = df[date_col].dt.to_period("M")
+
+    monthly_counts = (
+        df.groupby(patient_col)["year_month"]
+        .nunique()
+        .rename("months_with_data")
+    )
+
+    visit_range["total_months"] = (
+        (visit_range["max"].dt.to_period("M") -
+         visit_range["min"].dt.to_period("M"))
+        .apply(lambda x: x.n) + 1
+    )
+
+    visit_range = visit_range.join(monthly_counts)
+
+    visit_range["month_coverage"] = (
+        visit_range["months_with_data"] /
+        visit_range["total_months"]
+    )
+
+    # FILTERING
+    valid_patients_3m = visit_range[
+        visit_range["delta_days"] >= 90
+    ].index
+
+    valid_patients_80 = visit_range[
+        (visit_range["delta_days"] >= 90) &
+        (visit_range["month_coverage"] >= 0.8)
+    ].index
+
+    # MAP BACK TO DF
+    df["delta_days_diuretik"] = df[patient_col].map(
+        visit_range["delta_days"]
+    )
+
+    df["month_coverage"] = df[patient_col].map(
+        visit_range["month_coverage"]
+    )
+
+    # MAP GOLONGAN OBAT
+    golongan_obat = pd.read_excel(golob_file)
+
+    df["Golongan"] = df["Item Code"].map(
+        golongan_obat.set_index("Item Code")["Golongan"]
+    )
+
+    df_filtered = df[
+        df[patient_col].isin(valid_patients_80)
+    ]
+
+    # LOGGING
+    print("Total pasien:", df[patient_col].nunique())
+    print("Pasien ≥3 bulan:", len(valid_patients_3m))
+    print("Pasien ≥3 bulan + coverage ≥80%:", len(valid_patients_80))
+    print("Total baris tersimpan:", len(df_filtered))
+
+    
+    dict_sub={"Loop":["FUROSEMID 40 MG TABLET","FUROSEMID 20 MG/2 ML INJECTION","ROXEMID 20 MG/2 ML INJ","LASIX 20 MG/2 ML INJECTION"],
+              "PS":["SPIRONOLAKTON 100 MG TABLET","SPIRONOLAKTON 25 MG TABLET","CARPIATON 100 MG TABLET"],
+              "HCT":["HYDROCHLOROTHIAZIDE 25 MG TABLET"],
+              "HCT+BB":["LODOZ 5/6.25MG TABLET"],
+              "ARB+HCT":[ "CO IRVELL 300/12.5 MG TABLET","CO APROVEL 150 MG/12,5 MG TABLET"]
+              }
+
+    # flatten mapping
+    item_to_group = {
+        item.strip().upper(): key
+        for key, items in dict_sub.items()
+        for item in items
+    }
+
+    df_filtered["Sub_Golongan"] = df_filtered["Item Name"].map(item_to_group)
+
+    # SAVE
+    df_filtered.to_excel(output_file, index=False)
+
+    print(f"File saved: {output_file}")
+    
+def filter_patient_3_months(
+    input_file="diuretikfinal.xlsx",
+    output_file="diuretikfinal3bulan.xlsx",
+    patient_col="MR No. / Vendor Code",
+    golob_file = "gol_ob.xlsx",
+    date_col="Created Date"
+):
+
+    df = pd.read_excel(input_file)
+
+    df[date_col] = pd.to_datetime(
+        df[date_col],
+        dayfirst=True,
+        errors="coerce"
+    ).dt.normalize()  # hapus jam
+
+    visit_range = (
+        df.groupby(patient_col)[date_col]
+        .agg(["min", "max"])
+    )
+
+    visit_range["delta_days"] = (
+        visit_range["max"] - visit_range["min"]
+    ).dt.days
+
+    # ≥ 3 bulan ≈ 90 hari
+    valid_patients = visit_range[
+        visit_range["delta_days"] >= 90
+    ].index
+
+    df["delta_days_diuretik"] = df["MR No. / Vendor Code"].map(
+    visit_range["delta_days"])
+    
+    golongan_obat = pd.read_excel(golob_file)
+    df["Golongan"] = df["Item Code"].map(
+    golongan_obat.set_index("Item Code")["Golongan"]
+)
+    df_filtered = df[
+        df[patient_col].isin(valid_patients)
+    ]
+
+    print("Total pasien:", df[patient_col].nunique())
+    print("Pasien ≥3 bulan:", len(valid_patients))
+    print("Total baris tersimpan:", len(df_filtered))
+
+    df_filtered.to_excel(output_file, index=False)
+
+    print(f"File saved: {output_file}")
+
 def diuretik_egfr_combined(
     df_diuretik,
     df_egfr,
@@ -190,14 +478,12 @@ def diuretik_egfr_combined(
     3. Menghitung distribusi frekuensi
     4. (Opsional) Membuat bar plot frekuensi
     """
-
   
     diuretik_unique = df_diuretik.drop_duplicates(subset=diuretik_col)
     egfr_unique = df_egfr.drop_duplicates(subset=egfr_col)
 
     print(f"Diuretik unik : {len(diuretik_unique)} pasien")
     print(f"eGFR unik  : {len(egfr_unique)} pasien")
-
 
     set_diuretik = set(diuretik_unique[diuretik_col].dropna())
     set_egfr = set(egfr_unique[egfr_col].dropna())
@@ -206,7 +492,6 @@ def diuretik_egfr_combined(
     only_diuretik = set_diuretik - set_egfr
     only_egfr = set_egfr - set_diuretik
 
- 
     freq_dict = {
         "Diuretik only": len(only_diuretik),
         "eGFR only": len(only_egfr),
@@ -217,7 +502,6 @@ def diuretik_egfr_combined(
 
     print("\nDistribusi pasien:")
     print(freq_df)
-
 
     if make_plot:
         plt.figure(figsize=(6, 4))
@@ -245,8 +529,67 @@ def diuretik_egfr_combined(
         "set_egfr": set_egfr,
         "both": both
     }
+
+
+def visit_interval_after_merge_try(
+    df_both,
+    patient_col="Medical Record No.",
+    date_col="Order Date",
+    make_plot=True
+):
+    """
+    Menghitung distribusi interval kunjungan pasien
+    SETELAH data Diuretik dan eGFR digabung.
+    """
+
+    df = df_both.copy()
+
+    df[date_col] = pd.to_datetime(df[date_col], dayfirst=True, errors="coerce")
+
+    visit_range = (
+        df.groupby(patient_col)[date_col]
+        .agg(["min", "max"])
+    )
+
+    visit_range["delta_days"] = (
+        visit_range["max"] - visit_range["min"]
+    ).dt.days
+
+    df["delta_days_egfr"] = df[patient_col].map(
+        visit_range["delta_days"]
+    )
+    intervals = df["delta_days_egfr"].dropna()
+
+    df = df[df["delta_days_egfr"] >= 90]
     
-def visit_interval_after_merge(
+    bins = [90, 180, 365, np.inf]
+
+    labels = [
+        "3–6 bulan",
+        "6–12 bulan",
+        ">12 bulan"
+    ]
+
+    interval_cat = pd.cut(intervals, bins=bins, labels=labels, right=True)
+
+    freq = interval_cat.value_counts().reindex(labels)
+
+    print("\nDistribusi interval kunjungan (pasien Diuretik + eGFR):")
+    print(freq)
+
+    if make_plot:
+        plt.figure(figsize=(7, 4))
+        plt.bar(freq.index.astype(str), freq.values)
+        plt.ylabel("Jumlah Interval")
+        plt.title("Distribusi Interval Kunjungan Pasien Diuretik + eGFR")
+        plt.xticks(rotation=25)
+        plt.tight_layout()
+        plt.show()
+
+    return freq, df    
+
+
+def visit_interval_after_merge_old(
     df_both,
     patient_col="Medical Record No.",
     date_col="Order Date",
@@ -269,16 +612,19 @@ def visit_interval_after_merge(
         .diff()
         .dt.days
     )
+    #memotong di bawah 3 bulan
+    df = df[df["delta_days"]>90]
+    
+    visit_range = (
+        df.groupby(patient_col)[date_col]
+        .agg(["min", "max"])
+    )
 
     intervals = df["delta_days"].dropna()
 
-    bins = [0, 14, 30, 60, 90, 180, 365, np.inf]
+    bins = [90, 180, 365, np.inf]
 
     labels = [
-        "1–2 minggu",
-        "2–4 minggu",
-        "1–2 bulan",
-        "2–3 bulan",
         "3–6 bulan",
         "6–12 bulan",
         ">12 bulan"
@@ -290,7 +636,6 @@ def visit_interval_after_merge(
 
     print("\nDistribusi interval kunjungan (pasien Diuretik + eGFR):")
     print(freq)
-
 
     if make_plot:
         plt.figure(figsize=(7, 4))
@@ -307,7 +652,8 @@ def get_diuretik_egfr_longitudinal(
     df_diuretik,
     df_egfr,
     diuretik_col="MR No. / Vendor Code",
-    egfr_col="Medical Record No."
+    egfr_col="Medical Record No.", 
+    file_golob ="gol_ob.xlsx"
 ):
     """
     Ambil seluruh riwayat eGFR untuk pasien yang pernah mendapat Diuretik.
@@ -322,9 +668,32 @@ def get_diuretik_egfr_longitudinal(
     ].copy()
 
     print(f"Jumlah pasien Diuretik: {len(diuretik_patients)}")
-    print(f"Jumlah baris eGFR untuk pasien Diuretik: {len(df_egfr_filtered)}")
-
+    print(f"Jumlah baris eGFR untuk pasien Diuretik: {len(df_egfr_filtered)}")    
+    print("test")
     return df_egfr_filtered
+
+def extract_billing(x):
+    try:
+        if pd.isna(x):
+            return pd.Series([None, None])
+
+        # Convert ke string
+        x = str(x)
+
+        # Ambil semua angka (termasuk float)
+        numbers = re.findall(r"\d+\.?\d*", x)
+
+        # Convert ke float → int
+        numbers = [int(float(n)) for n in numbers]
+
+        if len(numbers) > 0:
+            return pd.Series([numbers[0], numbers[-1]])
+        else:
+            return pd.Series([None, None])
+
+    except:
+        return pd.Series([None, None])
+
 
 if __name__ == "__main__":
     if 0: # Kode untuk Memfilter
@@ -338,7 +707,10 @@ if __name__ == "__main__":
                  "SPIRONOLAKTON 100 MG TABLET",
                  "SPIRONOLAKTON 25 MG TABLET",
                  "CARPIATON 100 MG TABLET",
-                 "HYDROCHLOROTHIAZIDE 25 MG TABLET"
+                 "HYDROCHLOROTHIAZIDE 25 MG TABLET",
+                 "CO IRVELL 300/12.5 MG TABLET",
+                 "CO APROVEL 150 MG/12,5 MG TABLET",
+                 "LODOZ 5/6.25MG TABLET",
                  ),
         )
 
@@ -350,24 +722,113 @@ if __name__ == "__main__":
         df_combined = load_and_combine_excel_data(glob_pattern)
         df_combined.to_excel("D:\SKRIPSI\DATA RSUI\kurasiscdiuretikcombined.xlsx")
 
-        patient_visit_frequency(df_combined,
-                                patient_col="Patient Name / Vendor Name", 
-                                date_col="Created Date")
+        print("selesai")
 
+    """if 0: #kode untuk visit freq
+            df_combined = pd.read_excel("D:\SKRIPSI\DATA RSUI\kurasiscdiuretikcombined.xlsx", index_col=0)
+            patient_visit_frequency(df_combined,
+                                    patient_col="Patient Name / Vendor Name", 
+                                    date_col="Created Date")
 
-        print(df_combined.head())
-        df_combined.info()
+            print(df_combined.head())
+            df_combined.info()"""
     
-    if 1: # Analisis gabungan Diuretik & eGFR
-        df_diuretik = pd.read_excel("D:\SKRIPSI\DATA RSUI\kurasiscdiuretikcombined.xlsx")
-        df_egfr = pd.read_excel("D:\SKRIPSI\DATA RSUI\kurasiegfrcombined.xlsx")
+    if 0: # Kode untuk memindahkan no MR dan add kolom jenis kelamin
+        df_combined = pd.read_excel("D:\SKRIPSI\DATA RSUI\kurasiscdiuretikcombined.xlsx", index_col=0)
+        df_diuretikfinal = clean_patient_names(df_combined)
+        df_diuretikfinal = df_diuretikfinal = df_diuretikfinal.dropna(subset=["MR No. / Vendor Code"])
+
+        print("selesai")
+
+    if 0: # Kode untuk filter pasien minimal durasi pengobatan 3 bulan
+        #filter_patient_3_months(input_file="D:\SKRIPSI\DATA RSUI\diuretikfinal.xlsx", output_file=r"D:\SKRIPSI\DATA RSUI\diuretikfinal3bulan.xlsx")
+        filter_patient_3_months_with_coverage(input_file="D:\SKRIPSI\DATA RSUI\diuretikfinal.xlsx", output_file=r"D:\SKRIPSI\DATA RSUI\diuretikfinal3bulan.xlsx")
+        
+        print("selesai")
+
+    if 0: # Analisis gabungan Diuretik & eGFR
+        df_diuretik = pd.read_excel("D:\SKRIPSI\DATA RSUI\diuretikfinal3bulan.xlsx")
+        df_egfr = pd.read_excel("D:\SKRIPSI\DATA RSUI\kurasiegfrcombinedinterval.xlsx")
 
         df_long = get_diuretik_egfr_longitudinal(df_diuretik, df_egfr)
 
-        freq, df_interval = visit_interval_after_merge(
+        freq, df_interval = visit_interval_after_merge_try(
             df_long,
-            patient_col="Patient Name",
+            patient_col="Medical Record No.",
             date_col="Order Date"
         )
         
+        #kalau mau dibikin list, harus diubah kode di bawah
+        df_diuretik_unique = df_diuretik.drop_duplicates(
+        subset="MR No. / Vendor Code"
+        ).set_index("MR No. / Vendor Code")
+
+        df_interval = df_interval.set_index("Medical Record No.")
+
+        df_interval["delta_days_diuretik"] = df_interval.index.map(
+        df_diuretik_unique["delta_days_diuretik"]
+        )
+
+        df_interval["Golongan"] = df_interval.index.map(
+        df_diuretik_unique["Golongan"]
+    )   
+        df_long.to_excel("D:\SKRIPSI\DATA RSUI\diuretikegfrlongfix.xlsx")
+        df_interval.to_excel("D:\SKRIPSI\DATA RSUI\diuretikegfrintervalfix.xlsx")
+
         print("selesai")
+
+    if 0: #kode untuk visit freq dan billing
+        df_combined = pd.read_excel("D:\SKRIPSI\DATA RSUI\diuretikfinal.xlsx", index_col=0)
+        intervals_df, freq_days, freq_weeks = patient_visit_frequency(df_combined,
+                                patient_col="MR No. / Vendor Code", 
+                                date_col="Created Date")
+
+        print(df_combined.head())
+        df_combined.info()
+
+        intervals_df.to_excel("D:\SKRIPSI\DATA RSUI\kurasidiuretikinterval.xlsx")
+
+       # list_mr_intervals = intervals_df["Medical Record No."].tolist()
+       # df_combined_interval = df_combined[df_combined["MR No. / Vendor Code"].isin(list_mr_intervals)]
+       # df_combined_interval.to_excel("D:\SKRIPSI\DATA RSUI\kurasidiuretikcombinedinterval.xlsx")
+
+        print("test")
+
+    if 0: #no billing awal dan akhir
+        df = pd.read_excel("D:\SKRIPSI\DATA RSUI\kurasidiuretikinterval.xlsx")
+        df[["billing_awal", "billing_akhir"]] = df["billing"].apply(extract_billing)
+
+        df.to_excel("D:\SKRIPSI\DATA RSUI\kurasidiuretikinterval_with_billing_split.xlsx", index=False)
+
+        print("selesai")
+
+    """if 0: # Analisis perbandingan file sekar dan syakira
+        df1=pd.read_excel("D:\SKRIPSI\DATA RSUI\diuretikfinalsyakira.xlsx")
+        df2=pd.read_excel("D:\SKRIPSI\DATA RSUI\diuretikfinal.xlsx")
+        diff_df1 = df1.merge(df2, how='left', indicator=True).query('_merge == "left_only"').drop(columns='_merge')
+
+        missing_rows = set(df2["MR No. / Vendor Code"]) - set(df1["MR No. / Vendor Code"])
+
+        print("selesai")"""
+    
+    if 1: # Filter billing split berdasarkan data pasien egfr-diuretik 3 bulan
+        df_billing = pd.read_excel("D:\SKRIPSI\DATA RSUI\kurasidiuretikinterval_with_billing_split.xlsx")
+        df_ref = pd.read_excel("D:\SKRIPSI\DATA RSUI\diuretikegfrintervalfix.xlsx")
+        
+        col = "Medical Record No."  # sesuaikan kalau beda
+        
+        # Ambil daftar MR dari file referensi
+        valid_mr = set(df_ref[col].dropna().unique())
+
+        # Filter billing
+        df_filtered = df_billing[df_billing[col].isin(list(valid_mr))]
+
+        print("Total MR billing awal:", df_billing[col].nunique())
+        print("Total MR referensi:", df_ref[col].nunique())
+        print("Total MR setelah filter:", df_filtered[col].nunique())
+        print("Baris sebelum:", len(df_billing))
+        print("Baris setelah:", len(df_filtered))
+
+        df_filtered.to_excel("D:\SKRIPSI\DATA RSUI\Daftar No Billing Pasien Diuretik.xlsx", index=False)
+
+        print("D:\SKRIPSI\DATA RSUI\kurasi_diuretik_egfr_billing_split.xlsx")
