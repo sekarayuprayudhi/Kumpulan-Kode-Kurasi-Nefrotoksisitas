@@ -2,6 +2,7 @@ import glob, os, re
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
+import ast, math
 
 def filter_excel_by_keyword(
     excel_files_pattern,
@@ -115,33 +116,39 @@ def patient_visit_frequency(
 
     intervals_days = []
     intervals_weeks = []
+    billing_no = []
+    med_rec = []
 
     # Mengitung interval antar kunjungan per pasien
+    # interval ga buat billing, tapi buat nentuin perbedaan uji egfr aja
     for _, group in df.groupby(patient_col):
         dates = group[date_col].dropna().sort_values()
 
         if len(dates) < 2:
             continue
-
+        
         deltas = dates.diff().dropna()
-        intervals_days.append(deltas.dt.days.max())
-        intervals_weeks.append(deltas.dt.days.max() / 7)
+        intervals_week = (deltas.dt.days.sum()/7)
+
+        if intervals_week > 12:
+            intervals_days.append(deltas.dt.days.sum())
+            intervals_weeks.append(deltas.dt.days.sum() / 7)
+            billing_no.append(list(group["Billing No."]))
+            med_rec.append(group["MR No. / Vendor Code"].values[0])
 
     intervals_df = pd.DataFrame({
         "interval_days": intervals_days,
-        "interval_weeks": intervals_weeks
+        "interval_weeks": intervals_weeks,
+        "billing": billing_no,
+        "Medical Record No.": med_rec
     })
 
     # Distribusi hari
     freq_days = intervals_df["interval_days"].value_counts().sort_index()
 
     # Bin mingguan 
-    bins = [1, 2, 4, 8, 12, 24, 52, 1000]
+    bins = [12, 24, 52, 1000]
     labels = [
-        "1–2 minggu",
-        "2–4 minggu",
-        "1–2 bulan",
-        "2–3 bulan",
         "3–6 bulan",
         "6–12 bulan",
         ">12 bulan"
@@ -299,6 +306,116 @@ def clean_patient_names(df,
 
     return df
 
+def filter_patient_3_months_with_coverage(
+    input_file="raasifinal.xlsx",
+    output_file="raasifinal3bulan_80coverage.xlsx",
+    patient_col="MR No. / Vendor Code",
+    golob_file="gol_ob.xlsx",
+    date_col="Created Date"
+):
+    #delta days raasi yang bener
+
+    import pandas as pd
+
+    df = pd.read_excel(input_file)
+
+    # PREPROCESS DATE
+    df[date_col] = pd.to_datetime(
+        df[date_col],
+        dayfirst=True,
+        errors="coerce"
+    ).dt.normalize()  # hapus jam
+
+    # VISIT RANGE (MIN MAX)
+    visit_range = (
+        df.groupby(patient_col)[date_col]
+        .agg(["min", "max"])
+    )
+
+    visit_range["delta_days"] = (
+        visit_range["max"] - visit_range["min"]
+    ).dt.days
+
+    # MONTH COVERAGE
+    df["year_month"] = df[date_col].dt.to_period("M")
+
+    monthly_counts = (
+        df.groupby(patient_col)["year_month"]
+        .nunique()
+        .rename("months_with_data")
+    )
+
+    visit_range["total_months"] = (
+        (visit_range["max"].dt.to_period("M") -
+         visit_range["min"].dt.to_period("M"))
+        .apply(lambda x: x.n) + 1
+    )
+
+    visit_range = visit_range.join(monthly_counts)
+
+    visit_range["month_coverage"] = (
+        visit_range["months_with_data"] /
+        visit_range["total_months"]
+    )
+
+    # FILTERING
+    valid_patients_3m = visit_range[
+        visit_range["delta_days"] >= 90
+    ].index
+
+    valid_patients_80 = visit_range[
+        (visit_range["delta_days"] >= 90) &
+        (visit_range["month_coverage"] >= 0.8)
+    ].index
+
+    # MAP BACK TO DF
+    df["delta_days_raasi"] = df[patient_col].map(
+        visit_range["delta_days"]
+    )
+
+    df["month_coverage"] = df[patient_col].map(
+        visit_range["month_coverage"]
+    )
+
+    # MAP GOLONGAN OBAT
+    golongan_obat = pd.read_excel(golob_file)
+
+    df["Golongan"] = df["Item Code"].map(
+        golongan_obat.set_index("Item Code")["Golongan"]
+    )
+
+    df_filtered = df[
+        df[patient_col].isin(valid_patients_80)
+    ]
+
+    # LOGGING
+    print("Total pasien:", df[patient_col].nunique())
+    print("Pasien ≥3 bulan:", len(valid_patients_3m))
+    print("Pasien ≥3 bulan + coverage ≥80%:", len(valid_patients_80))
+    print("Total baris tersimpan:", len(df_filtered))
+
+
+    dict_sub={"ACEi":["KAPTOPRIL 25 MG TABLET","KAPTOPRIL 12,5 MG TABLET","KAPTOPRIL 50 MG TABLET","LISINOPRIL 5 MG TABLET","LISINOPRIL 10 MG TABLET","RAMIPRIL 2,5 MG TABLET","RAMIPRIL 10 MG TABLET","RAMIPRIL 5 MG TABLET","(FOI) RAMIPRIL 5 MG TABLET","EMERTEN 5 MG TABLET"],
+              "ARB":["KANDESARTAN 16 MG TABLET","KANDESARTAN 8 MG TABLET","CANDOTENS 8 MG TABLET","CANDOTENS 16 MG TABLET","VALSARTAN 160 MG TABLET","VALSARTAN 80 MG TABLET","DIOVAN 80 MG TABLET","IRBESARTAN 150 MG TABLET","IRBESARTAN 300 MG TABLET","APROVEL 300 MG TABLET","MICARDIS 40 MG TABLET","MICARDIS 80 MG TABLET","TINOV 40 MG TABLET","TINOV 80 MG TABLET"],
+              "ARNI+ARB":["UPERIO 50 MG TABLET","UPERIO 200 MG TABLET"],
+              "ARB+CCB":["EXFORGE 10 MG/160 MG TABLET","EXFORGE 5 MG/80 MG TABLET"],
+              "ARB+HCT":[ "CO IRVELL 300/12.5 MG TABLET","CO APROVEL 150 MG/12,5 MG TABLET"]
+              }
+
+    # flatten mapping
+    item_to_group = {
+        item.strip().upper(): key
+        for key, items in dict_sub.items()
+        for item in items
+    }
+
+    df_filtered["Sub_Golongan"] = df_filtered["Item Name"].map(item_to_group)
+
+    # SAVE
+    df_filtered.to_excel(output_file, index=False)
+
+    print(f"File saved: {output_file}")
+
 def filter_patient_3_months(
     input_file="raasifinal.xlsx",
     output_file="raasifinal3bulan.xlsx",
@@ -361,7 +478,6 @@ def raasi_egfr_combined(
     3. Menghitung distribusi frekuensi
     4. (Opsional) Membuat bar plot frekuensi
     """
-
   
     raasi_unique = df_raasi.drop_duplicates(subset=raasi_col)
     egfr_unique = df_egfr.drop_duplicates(subset=egfr_col)
@@ -369,14 +485,12 @@ def raasi_egfr_combined(
     print(f"RAASI unik : {len(raasi_unique)} pasien")
     print(f"eGFR unik  : {len(egfr_unique)} pasien")
 
-
     set_raasi = set(raasi_unique[raasi_col].dropna())
     set_egfr = set(egfr_unique[egfr_col].dropna())
 
     both = set_raasi & set_egfr
     only_raasi = set_raasi - set_egfr
     only_egfr = set_egfr - set_raasi
-
  
     freq_dict = {
         "RAASI only": len(only_raasi),
@@ -416,7 +530,66 @@ def raasi_egfr_combined(
         "both": both
     }
 
-def visit_interval_after_merge(
+
+def visit_interval_after_merge_try(
+    df_both,
+    patient_col="Medical Record No.",
+    date_col="Order Date",
+    make_plot=True
+):
+    """
+    Menghitung distribusi interval kunjungan pasien
+    SETELAH data RAASI dan eGFR digabung.
+    """
+
+    df = df_both.copy()
+
+    df[date_col] = pd.to_datetime(df[date_col], dayfirst=True, errors="coerce")
+
+    visit_range = (
+        df.groupby(patient_col)[date_col]
+        .agg(["min", "max"])
+    )
+
+    visit_range["delta_days"] = (
+        visit_range["max"] - visit_range["min"]
+    ).dt.days
+
+    df["delta_days_egfr"] = df[patient_col].map(
+        visit_range["delta_days"]
+    )
+    intervals = df["delta_days_egfr"].dropna()
+
+    df = df[df["delta_days_egfr"] >= 90]
+    
+    bins = [90, 180, 365, np.inf]
+
+    labels = [
+        "3–6 bulan",
+        "6–12 bulan",
+        ">12 bulan"
+    ]
+
+    interval_cat = pd.cut(intervals, bins=bins, labels=labels, right=True)
+
+    freq = interval_cat.value_counts().reindex(labels)
+
+    print("\nDistribusi interval kunjungan (pasien RAASI + eGFR):")
+    print(freq)
+
+    if make_plot:
+        plt.figure(figsize=(7, 4))
+        plt.bar(freq.index.astype(str), freq.values)
+        plt.ylabel("Jumlah Interval")
+        plt.title("Distribusi Interval Kunjungan Pasien RAASI + eGFR")
+        plt.xticks(rotation=25)
+        plt.tight_layout()
+        plt.show()
+
+    return freq, df    
+
+
+def visit_interval_after_merge_old(
     df_both,
     patient_col="Medical Record No.",
     date_col="Order Date",
@@ -442,6 +615,11 @@ def visit_interval_after_merge(
     #memotong di bawah 3 bulan
     df = df[df["delta_days"]>90]
     
+    visit_range = (
+        df.groupby(patient_col)[date_col]
+        .agg(["min", "max"])
+    )
+
     intervals = df["delta_days"].dropna()
 
     bins = [90, 180, 365, np.inf]
@@ -458,7 +636,6 @@ def visit_interval_after_merge(
 
     print("\nDistribusi interval kunjungan (pasien RAASI + eGFR):")
     print(freq)
-
 
     if make_plot:
         plt.figure(figsize=(7, 4))
@@ -494,6 +671,29 @@ def get_raasi_egfr_longitudinal(
     print(f"Jumlah baris eGFR untuk pasien RAASI: {len(df_egfr_filtered)}")    
     print("test")
     return df_egfr_filtered
+
+def extract_billing(x):
+    try:
+        if pd.isna(x):
+            return pd.Series([None, None])
+
+        # Convert ke string
+        x = str(x)
+
+        # Ambil semua angka (termasuk float)
+        numbers = re.findall(r"\d+\.?\d*", x)
+
+        # Convert ke float → int
+        numbers = [int(float(n)) for n in numbers]
+
+        if len(numbers) > 0:
+            return pd.Series([numbers[0], numbers[-1]])
+        else:
+            return pd.Series([None, None])
+
+    except:
+        return pd.Series([None, None])
+
 
 if __name__ == "__main__":
     if 0: # Kode untuk Memfilter
@@ -541,12 +741,14 @@ if __name__ == "__main__":
         df_combined = load_and_combine_excel_data(glob_pattern)
         df_combined.to_excel("D:\SKRIPSI\DATA RSUI\kurasiscraasicombined.xlsx")
 
+    """if 0: #kode untuk visit freq
+        df_combined = pd.read_excel("D:\SKRIPSI\DATA RSUI\kurasiscraasicombined.xlsx", index_col=0)
         patient_visit_frequency(df_combined,
                                 patient_col="Patient Name / Vendor Name", 
                                 date_col="Created Date")
 
         print(df_combined.head())
-        df_combined.info()
+        df_combined.info()"""
     
     if 0: # Kode untuk memindahkan no MR, add kolom jenis kelamin, (B) & (T)
         df_combined = pd.read_excel("D:\SKRIPSI\DATA RSUI\kurasiscraasicombined.xlsx", index_col=0)
@@ -556,43 +758,94 @@ if __name__ == "__main__":
         print("selesai")
 
     if 0: # Kode untuk filter pasien minimal durasi pengobatan 3 bulan
-        filter_patient_3_months(input_file=r"D:\SKRIPSI\DATA RSUI\raasifinal.xlsx", output_file=r"D:\SKRIPSI\DATA RSUI\raasifinal3bulan.xlsx")
+        #filter_patient_3_months(input_file=r"D:\SKRIPSI\DATA RSUI\raasifinal.xlsx", output_file=r"D:\SKRIPSI\DATA RSUI\raasifinal3bulan.xlsx")
+        filter_patient_3_months_with_coverage(input_file=r"D:\SKRIPSI\DATA RSUI\raasifinal.xlsx", output_file=r"D:\SKRIPSI\DATA RSUI\raasifinal3bulan.xlsx")
         
         print("selesai")
 
-    if 1: # Analisis gabungan RAASI & eGFR
+    if 0: # Analisis gabungan RAASI & eGFR
         df_raasi = pd.read_excel(r"D:\SKRIPSI\DATA RSUI\raasifinal3bulan.xlsx")
         df_egfr = pd.read_excel("D:\SKRIPSI\DATA RSUI\kurasiegfrcombinedinterval.xlsx")
 
         df_long = get_raasi_egfr_longitudinal(df_raasi, df_egfr)
 
-        freq, df_interval = visit_interval_after_merge(
+        freq, df_interval = visit_interval_after_merge_try(
             df_long,
-            patient_col="Patient Name",
+            patient_col="Medical Record No.",
             date_col="Order Date"
         )
         
-        df_interval.set_index("Medical Record No.")
-        df_raasi.set_index("MR No. / Vendor Code")
-        #golongan obat
+        #kalau mau dibikin list, harus diubah kode di bawah
+        df_raasi_unique = df_raasi.drop_duplicates(
+        subset="MR No. / Vendor Code"
+        ).set_index("MR No. / Vendor Code")
 
-        df_interval["delta_days_raasi"] = df_interval.map(
-        df_raasi["delta_days_raasi"])
-    
-        df_interval["delta_days_raasi"] = df_interval.index.map(df_raasi["delta_days_raasi"]
-                                                                )
-        #golongan_obat = pd.read_excel("gol_ob.xlsx")
+        df_interval = df_interval.set_index("Medical Record No.")
+
+        df_interval["delta_days_raasi"] = df_interval.index.map(
+        df_raasi_unique["delta_days_raasi"]
+        )
+
         df_interval["Golongan"] = df_interval.index.map(
-        df_raasi["Golongan"]
+        df_raasi_unique["Golongan"]
     )   
+        df_long.to_excel(r"D:\SKRIPSI\DATA RSUI\raasiegfrlongfix.xlsx")
+        df_interval.to_excel(r"D:\SKRIPSI\DATA RSUI\raasiegfrintervalfix.xlsx")
 
         print("selesai")
     
-    if 0: # Analisis perbandingan file sekar dan syakira
+    if 0: #kode untuk visit freq dan billing
+        df_combined = pd.read_excel(r"D:\SKRIPSI\DATA RSUI\raasifinal.xlsx", index_col=0)
+        intervals_df, freq_days, freq_weeks = patient_visit_frequency(df_combined,
+                                patient_col="MR No. / Vendor Code", 
+                                date_col="Created Date")
+
+        print(df_combined.head())
+        df_combined.info()
+
+        intervals_df.to_excel("D:\SKRIPSI\DATA RSUI\kurasiraasiinterval.xlsx")
+
+       # list_mr_intervals = intervals_df["Medical Record No."].tolist()
+       # df_combined_interval = df_combined[df_combined["MR No. / Vendor Code"].isin(list_mr_intervals)]
+       # df_combined_interval.to_excel("D:\SKRIPSI\DATA RSUI\kurasiraasicombinedinterval.xlsx")
+
+        print("test")
+
+    if 0: #no billing awal dan akhir
+        df = pd.read_excel("D:\SKRIPSI\DATA RSUI\kurasiraasiinterval.xlsx")
+        df[["billing_awal", "billing_akhir"]] = df["billing"].apply(extract_billing)
+
+        df.to_excel("D:\SKRIPSI\DATA RSUI\kurasiraasiinterval_with_billing_split.xlsx", index=False)
+
+        print("selesai")
+
+    """if 0: # Analisis perbandingan file sekar dan syakira
         df1=pd.read_excel(r"D:\SKRIPSI\DATA RSUI\raasifinalsyakira.xlsx")
         df2=pd.read_excel(r"D:\SKRIPSI\DATA RSUI\raasifinal.xlsx")
         diff_df1 = df1.merge(df2, how='left', indicator=True).query('_merge == "left_only"').drop(columns='_merge')
 
         missing_rows = set(df2["MR No. / Vendor Code"]) - set(df1["MR No. / Vendor Code"])
 
-        print("selesai")
+        print("selesai")"""
+    
+    if 1: # Filter billing split berdasarkan data pasien egfr-raasi 3 bulan
+        df_billing = pd.read_excel("D:\SKRIPSI\DATA RSUI\kurasiraasiinterval_with_billing_split.xlsx")
+        df_ref = pd.read_excel(r"D:\SKRIPSI\DATA RSUI\raasiegfrintervalfix.xlsx")
+        
+        col = "Medical Record No."  # sesuaikan kalau beda
+        
+        # Ambil daftar MR dari file referensi
+        valid_mr = set(df_ref[col].dropna().unique())
+
+        # Filter billing
+        df_filtered = df_billing[df_billing[col].isin(list(valid_mr))]
+
+        print("Total MR billing awal:", df_billing[col].nunique())
+        print("Total MR referensi:", df_ref[col].nunique())
+        print("Total MR setelah filter:", df_filtered[col].nunique())
+        print("Baris sebelum:", len(df_billing))
+        print("Baris setelah:", len(df_filtered))
+
+        df_filtered.to_excel("D:\SKRIPSI\DATA RSUI\Daftar No Billing Pasien RAASi.xlsx", index=False)
+
+        print("D:\SKRIPSI\DATA RSUI\kurasi_raasii_egfr_billing_split.xlsx")
