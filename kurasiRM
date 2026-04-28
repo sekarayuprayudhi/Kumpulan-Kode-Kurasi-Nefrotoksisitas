@@ -5,10 +5,40 @@ def build_pattern(text):
     if pd.isna(text):
         return []
     
-    items = re.split(r'[\n,]', str(text))
-    items = [i.strip().lower().replace('"','') for i in items if i.strip()]
+    text = str(text).lower()
+    
+    text = text.replace('\n', ' | ')
+    
+    items = re.split(r',(?=(?:[^"]*"[^"]*")*[^"]*$)|\|', text)
+    
+    items = [i.strip().strip('"') for i in items if i.strip()]
     
     return items
+
+def split_diagnosis(text):
+    if pd.isna(text):
+        return []
+    
+    text = str(text).lower()
+        
+    tokens = re.split(r',(?=(?:[^"]*"[^"]*")*[^"]*$)|\||;|/', text)
+    
+    tokens = [t.strip().strip('"') for t in tokens if t.strip()]
+
+    if "dmt2" in text:
+        print ("cape deh")
+    
+    return tokens
+
+def match_patterns(text_series, patterns):
+    patterns = [p.lower() for p in patterns]
+
+    return text_series.apply(
+        lambda x: any(
+            any(p == token for p in patterns)
+            for token in split_diagnosis(x)
+        )
+    )
 
 def create_diagnosis_features(df_rm, df_dict, weight_map=None, mode='merge_weighted'):
     """
@@ -54,6 +84,8 @@ def create_diagnosis_features(df_rm, df_dict, weight_map=None, mode='merge_weigh
         
         base_key = base_key.strip()
         
+ 
+            
         patterns = list(set(
             build_pattern(row['Diagnosa 1']) +
             build_pattern(row['Diagnosa 2'])
@@ -70,10 +102,12 @@ def create_diagnosis_features(df_rm, df_dict, weight_map=None, mode='merge_weigh
     
     # APPLY
     if mode == 'merge_weighted':
-        
         for base_key, entries in grouped.items():
             df[base_key] = 0.0
-            
+
+            if base_key == "DMT2":
+                print("lelah")
+
             for entry in entries:
                 patterns = entry['patterns']
                 weight = entry['weight']
@@ -81,12 +115,11 @@ def create_diagnosis_features(df_rm, df_dict, weight_map=None, mode='merge_weigh
                 if not patterns:
                     continue
                 
-                regex = '|'.join([re.escape(p) for p in patterns])
                 
                 match = (
-                    df['diag_awal'].str.contains(regex, na=False) |
-                    df['diag_akhir'].str.contains(regex, na=False)
-                )
+                    match_patterns(df['diag_awal'], patterns) |
+                    match_patterns(df['diag_akhir'], patterns)
+                    )
                 
                 # ambil max weight
                 df.loc[match, base_key] = df.loc[match, base_key].clip(lower=weight)
@@ -118,7 +151,7 @@ def create_diagnosis_features(df_rm, df_dict, weight_map=None, mode='merge_weigh
                 )
                 
                 # isi weight (bukan cuma 1)
-                df[col_name] = match.astype(float) * weight
+                df[col_name] = match.astype(float) 
     
     else:
         raise ValueError("mode tidak valid")
@@ -132,6 +165,12 @@ if __name__ == "__main__":
     df_rm = pd.read_excel("/Users/lathifasyakira/Downloads/RM.xlsx")
     df_dict = pd.read_excel("/Users/lathifasyakira/Downloads/Diagnosis.xlsx")
 
+
+    cols = ['Diagnosa', 'Diagnosa.1']
+
+    df_rm[cols] = df_rm[cols].replace(r'[\r\n]+', '|', regex=True)
+    df_dict = df_dict.replace(r'[\r\n]+', '|', regex=True)
+    
     weight_config = {'sus': 0.5, 'ec': 0.6, 'dd': 0.7}
 
     # 1. DIGABUNG (1 kolom per penyakit)
@@ -140,7 +179,7 @@ if __name__ == "__main__":
     # 2. DIPISAH (multi kolom)
     df_sep = create_diagnosis_features(df_rm, df_dict, weight_map=weight_config, mode='separate_weighted')
 
-    # df_merge.to_excel('merge.xlsx', index=False)
-    # df_sep.to_excel('separate.xlsx', index=False)   
+    df_merge.to_excel('merge_s05e06d07.xlsx', index=False)
+    df_sep.to_excel('separate.xlsx', index=False)   
 
-    print ("selesai")           
+    print ("selesai")      
