@@ -1,0 +1,75 @@
+def add_usia_from_dob(
+    file_merge,
+    file_ref,
+    output_file=None,
+    col_merge_mrn="MRN",
+    col_ref_mrn="MR No. / Vendor Code",
+    col_dob="Date of Birth",
+    ref_date="2025-12-31",
+    drop_dob=False
+):
+    df_merge = pd.read_excel(file_merge)
+    df_ref = pd.read_excel(file_ref)
+
+    df_ref = df_ref.rename(columns={
+        col_ref_mrn: col_merge_mrn,
+        col_dob: "DOB"
+    })
+
+    df_merge[col_merge_mrn] = df_merge[col_merge_mrn].astype(str)
+    df_ref[col_merge_mrn] = df_ref[col_merge_mrn].astype(str)
+
+    df_ref["DOB"] = pd.to_datetime(df_ref["DOB"], errors="raise", dayfirst=True)
+
+    df_ref['is_valid_dob'] = df_ref['DOB'].notna()
+
+    df_ref = (
+        df_ref
+        .sort_values(by=[col_merge_mrn, 'is_valid_dob'], ascending=[True, False])
+        .drop_duplicates(subset=col_merge_mrn, keep='first')
+        .drop(columns='is_valid_dob')
+        )
+    df = df_merge.merge(
+        df_ref[[col_merge_mrn, "DOB"]],
+        on=col_merge_mrn,
+        how="left"
+    )
+
+    ref_date = pd.to_datetime(ref_date)
+
+    df["usia_tahun"] = ref_date.year - df["DOB"].dt.year
+    df["usia_tahun"] -= (
+        (ref_date.month < df["DOB"].dt.month) |
+        ((ref_date.month == df["DOB"].dt.month) & (ref_date.day < df["DOB"].dt.day))
+    )
+
+    total_bulan = (
+        (ref_date.year - df["DOB"].dt.year) * 12 +
+        (ref_date.month - df["DOB"].dt.month)
+    )
+
+    # kalau tanggal belum lewat → kurang 1 bulan
+    kurang_bulan = (ref_date.day < df["DOB"].dt.day).astype(int)
+    total_bulan = total_bulan - kurang_bulan
+
+    df["usia_bulan"] = total_bulan % 12
+    df.fillna(0)
+    #df["usia"] = (
+        #df["usia_tahun"].astype("Int64")
+    #)
+
+    if drop_dob:
+        df = df.drop(columns=["DOB"])
+
+    if output_file:
+        df.to_excel(output_file, index=False)
+
+    return df
+
+if 1: #Tambah kolom usia
+    df = add_usia_from_dob(
+        file_merge="/Users/lathifasyakira/Desktop/SKRIPSI/merge_s05e06d07.xlsx",
+        file_ref="/Users/lathifasyakira/Desktop/SKRIPSI/diuretikfinal3bulan.xlsx",
+        output_file="/Users/lathifasyakira/Desktop/SKRIPSI/merge_with_usia.xlsx"             
+        )
+    print ("selesai") 
