@@ -141,11 +141,11 @@ def patient_visit_frequency(
             continue
         
         deltas = dates.diff().dropna()
-        intervals_week = (deltas.dt.days.max() / 7)
+        intervals_week = (deltas.dt.days.sum() / 7)
 
         if intervals_week > 12:
-            intervals_days.append(deltas.dt.days.max())
-            intervals_weeks.append(deltas.dt.days.max() / 7)
+            intervals_days.append(deltas.dt.days.sum())
+            intervals_weeks.append(deltas.dt.days.sum() / 7)
             billing_no.append(list(group["Billing No."]))
             med_rec.append(group["Medical Record No."].values[0])
 
@@ -157,6 +157,8 @@ def patient_visit_frequency(
         "Medical Record No.": med_rec
 
     })
+
+    intervals_df = intervals_df[intervals_df["interval_days"] >= 90]
 
     # Distribusi hari
     freq_days = intervals_df["interval_days"].value_counts().sort_index()
