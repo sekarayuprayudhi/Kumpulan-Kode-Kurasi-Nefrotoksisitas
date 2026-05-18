@@ -56,7 +56,7 @@ def build_master_dataset(
     file_pasien="RMDiuretik.xlsx",
     file_diuretik="diuretikfinal3bulan.xlsx",
     file_usia="merge_with_usia.xlsx",
-    file_nefro="NefrotoksikAkumulasi.xlsx",
+    file_nefro="NefrotoksikMaksimalisasi.xlsx",
     file_egfr="egfr_delta.xlsx",
     output_file=None
 ):
@@ -159,9 +159,10 @@ def build_master_dataset(
     df_nefro = df_nefro[
         df_nefro["MRN"].isin(patient_list)
     ]
-
+    
+    # tiap ganti file utk variasi ini harus disesuaikan dgn kolom
     df_nefro = df_nefro[
-        ["MRN", "nefrotoksik_akumulasi"]
+        ["MRN", "nefrotoksik_maksimalisasi"] 
     ].drop_duplicates(subset="MRN")
 
     df_egfr = pd.read_excel(file_egfr)
@@ -253,7 +254,7 @@ def run_ml_experiment(
         "bootstrap": [True, False]
     }
 
-    kfold = KFold(
+    kfold = kfold(
         n_splits=5,
         shuffle=True,
         random_state=42
@@ -405,7 +406,7 @@ def run_ml_experiment(
         ]
     })
 
-    joblib.dump(model,"diur_weight_akum_ynondelta.pkl")
+    joblib.dump(model,"diur_weight_maks_ynondelta.pkl")
 
     with pd.ExcelWriter(output_excel) as writer:
 
@@ -621,7 +622,7 @@ def run_ml_experiment_normalized(
         ]
     })
     
-    joblib.dump(model,"diur_weight_akum_yperdelta.pkl")
+    joblib.dump(model,"diur_weight_maks_yperdelta.pkl")
     
     with pd.ExcelWriter(output_excel) as writer:
 
@@ -640,6 +641,250 @@ def run_ml_experiment_normalized(
     print("\n=== SELESAI ===")
 
 
+from sklearn.metrics import (accuracy_score, 
+                             precision_score, 
+                             recall_score, 
+                             f1_score, 
+                             roc_auc_score, 
+                             confusion_matrix)
+
+from sklearn.ensemble import (RandomForestClassifier)
+
+def run_rf_classification(
+    file_path,
+    output_excel,
+    batas_atas=-9,
+    batas_bawah=-10
+):
+
+    df = pd.read_excel(file_path)
+
+    df = df.dropna(subset=["delta", "days"])
+
+    df = df[df["days"] > 0]
+
+    # NORMALISASI KE 90 HARI
+    # delta_90 = (delta / days) * 90
+    df["delta_90hari"] = (
+        df["delta"] / df["days"]
+    ) * 90
+
+    # LABELING
+    # delta > batas_atas  -> 0; delta < batas_bawah -> 1
+    df = df[
+        (df["delta_90hari"] > batas_atas) |
+        (df["delta_90hari"] < batas_bawah)
+    ].copy()
+
+    df["target"] = np.where(
+        df["delta_90hari"] < batas_bawah,
+        1,
+        0
+    )
+
+    print("\n=== DISTRIBUSI TARGET ===")
+    print(df["target"].value_counts())
+
+    # TARGET
+    y = df["target"]
+
+    mrn = df["MRN"]
+
+    X = df.drop(columns=[
+        "MRN",
+        "delta",
+        "days",
+        "delta_90hari",
+        "target"
+    ])
+
+    X = X.fillna(0)
+
+    # HYPERPARAMETER
+    param_grid = {
+        "n_estimators": [50, 100, 1000],
+        "max_features": ["log2", "sqrt"],
+        "max_depth": [
+            None, 1, 2, 3, 4, 5, 10, 15, 20,
+            25, 30, 35, 40, 45, 50
+        ],
+        "min_samples_split": [2, 3, 5, 7, 10],
+        "min_samples_leaf": [1, 2, 3, 4],
+        "bootstrap": [True, False]
+    }
+
+    print("\n=== TUNING RF CLASSIFIER ===")
+
+    StratifyKFold = KFold(
+        n_splits=5,
+        shuffle=True,
+        random_state=42
+    )
+
+    grid = GridSearchCV(
+        RandomForestClassifier(
+            random_state=42,
+            n_jobs=-1,
+            class_weight = "balanced"
+        ),
+        param_grid,
+        cv=StratifyKFold,
+        scoring="average_precision",
+        n_jobs=-1,
+        verbose=1
+    )
+
+    grid.fit(X, y)
+
+    print("Best params:", grid.best_params_)
+
+    results = []
+
+    for run in range(5):
+
+        print(f"\n===== TEST RUN {run+1} =====")
+
+        X_train, X_test, y_train, y_test, mrn_train, mrn_test = train_test_split(
+            X,
+            y,
+            mrn,
+            test_size=0.2,
+            random_state=run,
+            stratify=y
+        )
+
+        model = RandomForestClassifier(
+            **grid.best_params_,
+            random_state=42,
+            n_jobs=-1,
+            class_weight = "balanced"
+        )
+
+        model.fit(X_train, y_train)
+
+        y_pred = model.predict(X_test)
+
+        y_prob = model.predict_proba(X_test)[:, 1]
+
+        # METRICS
+        acc = accuracy_score(y_test, y_pred)
+
+        precision = precision_score(
+            y_test,
+            y_pred,
+            zero_division=0
+        )
+
+        recall = recall_score(
+            y_test,
+            y_pred,
+            zero_division=0
+        )
+
+        f1 = f1_score(
+            y_test,
+            y_pred,
+            zero_division=0
+        )
+
+        auc = roc_auc_score(
+            y_test,
+            y_prob
+        )
+
+        cm = confusion_matrix(
+            y_test,
+            y_pred
+        )
+
+        print(f"Accuracy : {acc:.3f}")
+        print(f"Precision: {precision:.3f}")
+        print(f"Recall   : {recall:.3f}")
+        print(f"F1 Score : {f1:.3f}")
+        print(f"AUC      : {auc:.3f}")
+
+        print("\nConfusion Matrix")
+        print(cm)
+
+        # SAVE PREDICTION
+        pred_df = pd.DataFrame({
+            "MRN": mrn_test.values,
+            "y_true": y_test.values,
+            "y_pred": y_pred,
+            "y_prob": y_prob
+        })
+
+        pred_path = output_excel.replace(
+            ".xlsx",
+            f"_prediction_run{run+1}.xlsx"
+        )
+
+        pred_df.to_excel(pred_path, index=False)
+
+        # SAVE RESULT
+        results.append({
+            "run": run+1,
+            "accuracy": acc,
+            "precision": precision,
+            "recall": recall,
+            "f1": f1,
+            "auc": auc
+        })
+
+    # SAVE MODEL
+    joblib.dump(
+        model,
+        output_excel.replace(".xlsx", ".pkl")
+    )
+
+    # SUMMARY
+    results_df = pd.DataFrame(results)
+
+    summary = pd.DataFrame({
+        "metric": ["mean", "std"],
+
+        "accuracy": [
+            results_df["accuracy"].mean(),
+            results_df["accuracy"].std()
+        ],
+
+        "precision": [
+            results_df["precision"].mean(),
+            results_df["precision"].std()
+        ],
+
+        "recall": [
+            results_df["recall"].mean(),
+            results_df["recall"].std()
+        ],
+
+        "f1": [
+            results_df["f1"].mean(),
+            results_df["f1"].std()
+        ],
+
+        "auc": [
+            results_df["auc"].mean(),
+            results_df["auc"].std()
+        ]
+    })
+
+    with pd.ExcelWriter(output_excel) as writer:
+
+        results_df.to_excel(
+            writer,
+            sheet_name="per_run",
+            index=False
+        )
+
+        summary.to_excel(
+            writer,
+            sheet_name="summary",
+            index=False
+        )
+
+    print("\n=== SELESAI RF CLASSIFICATION ===")
+
 if __name__ == "__main__":  
     if 0: # eGFRR delta
         df_delta = build_egfr_delta(
@@ -654,25 +899,35 @@ if __name__ == "__main__":
             file_pasien="/Users/lathifasyakira/Desktop/SKRIPSI/variabelX/RMDiuretik.xlsx",
             file_diuretik="/Users/lathifasyakira/Desktop/SKRIPSI/variabelX/diuretikfinal3bulan.xlsx",
             file_usia="/Users/lathifasyakira/Desktop/SKRIPSI/variabelX/merge_with_usia.xlsx",
-            file_nefro="/Users/lathifasyakira/Desktop/SKRIPSI/variabelX/NefrotoksikAkumulasi.xlsx",
+            file_nefro="/Users/lathifasyakira/Desktop/SKRIPSI/variabelX/NefrotoksikMaksimalisasi.xlsx",
             file_egfr="/Users/lathifasyakira/Downloads/egfr_delta_sekar.xlsx",
-            output_file="master_ready_ml_diuretik.xlsx"
+            output_file="master_weight_maks_diuretik.xlsx"
             )
         
         print("selesai")
 
-    if 1: # ML ORIGINAL DELTA   
+    if 0: # ML RF REGRESI ORIGINAL DELTA   
         run_ml_experiment(
-            file_path="/Users/lathifasyakira/Desktop/SKRIPSI/master_ready_ml_diuretik.xlsx",
-            output_excel="/Users/lathifasyakira/Desktop/SKRIPSI/hasil_ml_diuretik.xlsx"
+            file_path="/Users/lathifasyakira/Desktop/SKRIPSI/master_weight_maks_diuretik.xlsx",
+            output_excel="/Users/lathifasyakira/Desktop/SKRIPSI/HASILRF/Regresi/hasil_weight_maks_diur.xlsx"
             )
         
-        print("selesai")
+        print("selesai original")
 
-    if 0: # ML NORMALIZED DELTA (y adalah y dibagi delta days, tidak dijadikan x lagi delta daysnya)
+    if 0: # ML RF REGRESI NORMALIZED DELTA (y adalah y dibagi delta days, tidak dijadikan x lagi delta daysnya)
         run_ml_experiment_normalized(
-            file_path="/Users/lathifasyakira/Desktop/SKRIPSI/master_ready_ml_diuretik.xlsx",
-            output_excel="/Users/lathifasyakira/Desktop/SKRIPSI/hasil_ml_diuretik_normalized.xlsx"
+            file_path="/Users/lathifasyakira/Desktop/SKRIPSI/master_weight_maks_diuretik.xlsx",
+            output_excel="/Users/lathifasyakira/Desktop/SKRIPSI/HASILRF/Regresi/hasil_weight_maks_diur_normalized.xlsx"
             )
 
         print("selesai normalized")
+
+    if 1: # ML RF KLASIFIKASI
+        run_rf_classification(
+            file_path="/Users/lathifasyakira/Desktop/SKRIPSI/master_weight_akum_diuretik.xlsx",
+            output_excel="/Users/lathifasyakira/Desktop/SKRIPSI/HASILRF/Klasifikasi/Precision_classweight_numweight_akum_diur.xlsx",
+            batas_atas=-9,
+            batas_bawah=-10
+            )
+        
+        print("selesai rf classification") 
